@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p ~/.claude
+touch ~/.claude.json
+exec podman run --rm -it \
+  --userns=keep-id \
+  --security-opt no-new-privileges \
+  --cap-drop=ALL \
+  -v "$PWD:/work:z" \
+  -v "$HOME/.claude:/home/node/.claude:z" \
+  -v "$HOME/.claude.json:/home/node/.claude.json:z" \
+  -w /work \
+  -e TERM \
+  claude-box:latest "$@"
