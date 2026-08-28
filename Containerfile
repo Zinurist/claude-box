@@ -4,8 +4,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl git ripgrep jq less ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# npm >= 11.17 skips lifecycle scripts unless explicitly allowed; claude-code
-# needs its postinstall to run.
+# npm >= 11.17 skips lifecycle scripts unless explicitly allowed. This is the
+# exact package list npm itself suggests for these two installs; without it npm
+# only warns, so the build would still "succeed" with scripts skipped.
 RUN npm install -g --allow-scripts=@anthropic-ai/claude-code,@google/genai,protobufjs \
       @anthropic-ai/claude-code @earendil-works/pi-coding-agent
 
@@ -15,11 +16,16 @@ RUN curl -fsSL https://opencode.ai/install | bash \
  && install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode \
  && rm -rf /root/.opencode
 
+# Fail the build loudly if any of the three didn't actually install (e.g. the
+# --allow-scripts list above drifted, which npm only warns about).
+RUN claude --version && pi --version && opencode --version \
+ && rm -rf /root/.cache /root/.local /root/.config /root/.pi
+
 # Pre-create XDG dirs for the unprivileged user: podman auto-creates missing
 # mount parents as root, which would make e.g. /home/node/.local/state
 # unwritable by opencode.
-RUN mkdir -p /home/node/.config /home/node/.local/share /home/node/.local/state \
- && chown -R node:node /home/node/.config /home/node/.local
+RUN mkdir -p /home/node/.config /home/node/.cache /home/node/.local/share /home/node/.local/state \
+ && chown -R node:node /home/node/.config /home/node/.cache /home/node/.local
 
 USER node
 WORKDIR /work

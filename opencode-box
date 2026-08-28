@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir -p ~/.config/opencode ~/.local/share/opencode
-exec podman run --rm -it \
-  --userns=keep-id \
-  --security-opt no-new-privileges \
-  --cap-drop=ALL \
-  -v "$PWD:/work:z" \
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
+abox_parse "$@"
+mkdir -p ~/.config/opencode ~/.local/share/opencode ~/.cache/opencode
+exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
   -v "$HOME/.config/opencode:/home/node/.config/opencode:z" \
   -v "$HOME/.local/share/opencode:/home/node/.local/share/opencode:z" \
-  -w /work \
-  -e TERM \
-  agent-box:latest opencode "$@"
+  -v "$HOME/.cache/opencode:/home/node/.cache/opencode:z" \
+  -e ANTHROPIC_API_KEY \
+  -e OPENAI_API_KEY \
+  -e GEMINI_API_KEY \
+  -e GOOGLE_GENERATIVE_AI_API_KEY \
+  -e OPENROUTER_API_KEY \
+  -e GROQ_API_KEY \
+  agent-box:latest opencode "${ABOX_ARGS[@]}"
