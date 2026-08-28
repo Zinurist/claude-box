@@ -5,13 +5,17 @@ container, so each only ever sees the directories you hand it.
 
 One shared image, one wrapper per tool:
 
-- `Containerfile` — `node:24-slim` + `git`, `ripgrep`, `jq`, `less`, plus
-  `@anthropic-ai/claude-code`, `@earendil-works/pi-coding-agent` (npm) and the
-  opencode binary (official installer). Runs as the unprivileged `node` user;
-  no entrypoint, the wrapper selects the binary. A build-time smoke test runs
-  `--version` for all three so a broken install fails the build.
+- `Containerfile` — `node:24-slim` + `git`, `ripgrep`, `jq`, `less`, `zstd`,
+  plus `@earendil-works/pi-coding-agent` (npm), the opencode binary and the
+  Claude Code native build (both official installers). Runs as the unprivileged
+  `node` user; no entrypoint, the wrapper selects the binary. A build-time
+  smoke test runs `--version` for all three so a broken install fails the
+  build.
 - `claude-box` — runs `claude`, bind-mounts your host `~/.claude` /
-  `~/.claude.json` so config and auth persist.
+  `~/.claude.json` so config and auth persist, plus the native install dirs so
+  Claude Code can update itself (see below).
+- `claude-launch` — in-image launcher that seeds and selects the Claude Code
+  binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
   `~/.local/share/opencode` (auth, db, sessions) and `~/.cache/opencode`
   (helper binaries opencode downloads at startup).
@@ -65,6 +69,45 @@ and a path that does not exist is a hard error before the container starts.
 Without a `--`, every argument goes straight to the CLI and nothing extra is
 mounted — so `claude-box --resume xyz` still works as before.
 
+## Claude Code auto-updates
+
+An npm global install cannot update itself here: it lives in root-owned
+`/usr/local`, the container runs as `node`, and Claude Code reports
+`Auto-update failed: no write permission to npm prefix`. The image therefore
+uses the **native** install instead — a single versioned binary that lives
+entirely under `$HOME`:
+
+```
+~/.local/share/claude/versions/<version>   the binary itself
+~/.local/bin/claude                        symlink to the active version
+~/.cache/claude/staging                    download staging for updates
+```
+
+`claude-box` mounts the two writable ones from the host, keyed to agent-box
+so they stay separate from your own host install:
+
+| host | container |
+|---|---|
+| `~/.local/share/agent-box/claude` | `~/.local/share/claude` |
+| `~/.cache/agent-box/claude` | `~/.cache/claude` |
+
+Both sit on the same host filesystem, so the updater's
+staging-to-versions rename stays on one device.
+
+The symlink is not mounted — it lives in the container and is rebuilt on
+every run by `claude-launch`, which:
+
+1. copies any version from the image's `/opt/claude-seed` that the volume
+   does not already have, so the first run costs no download and a rebuilt
+   image is picked up immediately;
+2. symlinks `~/.local/bin/claude` to the highest version present (`sort -V`),
+   which is how a version the auto-updater installed in an earlier session
+   gets used;
+3. execs it with your arguments.
+
+`claude doctor` inside the box should report `Running: native` and
+`Auto-updates: enabled`.
+
 ## Notes
 
 - The container resolves hostnames via its own DNS. If your opencode config
@@ -81,6 +124,9 @@ mounted — so `claude-box --resume xyz` still works as before.
   different host projects lands in the same bucket (`~/.pi/agent/sessions/`,
   `~/.claude/projects/-work/`). Harmless, but `--continue`/`--resume` will
   offer sessions from other projects.
+- Only Claude Code auto-updates inside the box. `pi update self` and
+  opencode's updater still write to root-owned `/usr/local`, so those two
+  are updated by rebuilding the image (`./install.sh`).
 - `git` is available in the image but your `~/.gitconfig` is not mounted, so
   in-container commits need `user.name`/`user.email` set in the repo (or add a
   read-only mount for it).

@@ -2,12 +2,14 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 abox_parse "$@"
-mkdir -p ~/.claude
+mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude
 touch ~/.claude.json
 exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
   -v "$HOME/.claude:/home/node/.claude:z" \
   -v "$HOME/.claude.json:/home/node/.claude.json:z" \
+  -v "$HOME/.local/share/agent-box/claude:/home/node/.local/share/claude:z" \
+  -v "$HOME/.cache/agent-box/claude:/home/node/.cache/claude:z" \
   -e ANTHROPIC_API_KEY \
   -e ANTHROPIC_AUTH_TOKEN \
   -e ANTHROPIC_BASE_URL \
-  agent-box:latest claude "${ABOX_ARGS[@]}"
+  agent-box:latest claude-launch "${ABOX_ARGS[@]}"

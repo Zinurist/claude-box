@@ -1,0 +1,36 @@
+#!/bin/sh
+# Launcher for Claude Code inside agent-box. Baked into the image; not used on
+# the host.
+#
+# claude-box mounts ~/.local/share/claude (the versioned native binaries) from
+# the host, so Claude Code's own auto-updater can write there and the update
+# survives `podman run --rm`. On the first run that volume is empty, so seed it
+# from the copy baked into the image rather than downloading ~200MB again.
+set -eu
+
+versions="$HOME/.local/share/claude/versions"
+mkdir -p "$versions" "$HOME/.local/bin"
+
+# Copy in any seed version the volume doesn't have yet. Covers both the first
+# run and a rebuilt image shipping a newer build than the volume holds.
+for seed in /opt/claude-seed/*; do
+  [ -f "$seed" ] || continue
+  version=${seed##*/}
+  if [ ! -f "$versions/$version" ]; then
+    echo "claude-box: seeding claude $version into the mounted volume" >&2
+    cp "$seed" "$versions/$version"
+    chmod 0755 "$versions/$version"
+  fi
+done
+
+# The symlink lives in the container's own filesystem, so point it at the
+# newest version in the volume on every run — including one the auto-updater
+# installed during an earlier session.
+newest=$(ls "$versions" | sort -V | tail -n 1)
+if [ -z "$newest" ]; then
+  echo "claude-box: no claude binary found in $versions" >&2
+  exit 1
+fi
+ln -sfn "$versions/$newest" "$HOME/.local/bin/claude"
+
+exec "$HOME/.local/bin/claude" "$@"
