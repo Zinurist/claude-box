@@ -2,6 +2,7 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 abox_parse "$@"
+abox_dnf_setup
 mkdir -p ~/.pi
 exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
   -v "$HOME/.pi:/home/node/.pi:z" \

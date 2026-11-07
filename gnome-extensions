@@ -1,0 +1,331 @@
+#!/usr/bin/python3
+"""Minimal stand-in for GNOME's `gnome-extensions` CLI, for agent-box.
+
+The real CLI ships in the gnome-shell package, which drags in mutter, gjs
+and much more. Everything it does is either a call on the
+running shell's org.gnome.Shell.Extensions D-Bus API or plain file work, so
+this reimplements the commonly used subcommands on top of Gio. Output and
+options follow the real tool closely enough for scripts and agents.
+
+Needs the filtered session bus that claude-box provides.
+
+Extra, non-standard subcommand:
+  errors UUID   print the errors the shell recorded for an extension
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+from gi.repository import Gio, GLib
+
+BUS_NAME = "org.gnome.Shell.Extensions"
+OBJ_PATH = "/org/gnome/Shell/Extensions"
+IFACE = "org.gnome.Shell.Extensions"
+
+# js/misc/extensionUtils.js (ExtensionState / ExtensionType)
+STATES = {
+    1: "ACTIVE", 2: "INACTIVE", 3: "ERROR", 4: "OUT OF DATE",
+    5: "DOWNLOADING", 6: "INITIALIZED", 7: "DEACTIVATING", 8: "ACTIVATING",
+    99: "UNINSTALLED",
+}
+TYPE_SYSTEM, TYPE_USER = 1, 2
+
+USER_DIR = os.path.join(GLib.get_user_data_dir(), "gnome-shell", "extensions")
+HOST_HOME = os.environ.get("ABOX_HOST_HOME")
+
+
+def die(msg, quiet=False):
+    if not quiet:
+        print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def shell_call(method, args=None, reply="", quiet=False):
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = bus.call_sync(
+            BUS_NAME, OBJ_PATH, IFACE, method, args,
+            GLib.VariantType.new(f"({reply})") if reply else None,
+            Gio.DBusCallFlags.NONE, -1, None)
+    except GLib.Error as e:
+        die(f"Failed to connect to GNOME Shell: {e.message}\n"
+            "(only claude-box provides it, and only with a GNOME session bus)", quiet)
+    return res.unpack() if res is not None else ()
+
+
+def host_path(path):
+    """Shell reports host paths; show the in-container equivalent."""
+    if HOST_HOME and path.startswith(HOST_HOME + "/"):
+        return os.path.expanduser("~") + path[len(HOST_HOME):]
+    return path
+
+
+def get_info(uuid, quiet=False):
+    (info,) = shell_call("GetExtensionInfo", GLib.Variant("(s)", (uuid,)),
+                         "a{sv}", quiet)
+    if not info:
+        die(f"Extension “{uuid}” doesn't exist", quiet)
+    return info
+
+
+def print_details(info):
+    print(info["uuid"])
+    print(f"  Name: {info.get('name', '')}")
+    print(f"  Description: {info.get('description', '')}")
+    print(f"  Path: {host_path(info.get('path', ''))}")
+    if info.get("url"):
+        print(f"  URL: {info['url']}")
+    if info.get("original-author"):
+        print(f"  Original author: {', '.join(info['original-author'])}")
+    if "version-name" in info:
+        print(f"  Version: {info['version-name']}")
+    elif "version" in info:
+        print(f"  Version: {int(info['version'])}")
+    print(f"  Enabled: {'Yes' if info.get('enabled') else 'No'}")
+    print(f"  State: {STATES.get(int(info.get('state', 0)), 'UNKNOWN')}")
+    if info.get("error"):
+        print(f"  Error: {info['error']}")
+
+
+# --- subcommands -----------------------------------------------------------
+
+def cmd_list(a):
+    (exts,) = shell_call("ListExtensions", None, "a{sa{sv}}", a.quiet)
+    want_type = {t for t, on in ((TYPE_USER, a.user), (TYPE_SYSTEM, a.system))
+                 if on} or {TYPE_USER, TYPE_SYSTEM}
+    shown = 0
+    for uuid in sorted(exts):
+        info = exts[uuid]
+        state = int(info.get("state", 0))
+        enabled = bool(info.get("enabled"))
+        if int(info.get("type", 0)) not in want_type:
+            continue
+        if (a.enabled or a.disabled) and not (
+                (a.enabled and enabled) or (a.disabled and not enabled)):
+            continue
+        if (a.active or a.inactive) and not (
+                (a.active and state == 1) or (a.inactive and state != 1)):
+            continue
+        if a.prefs and not info.get("hasPrefs"):
+            continue
+        if a.updates and not info.get("hasUpdate"):
+            continue
+        if a.details:
+            if shown:
+                print()
+            print_details(info)
+        else:
+            print(uuid)
+        shown += 1
+
+
+def cmd_info(a):
+    print_details(get_info(a.uuid, a.quiet))
+
+
+def cmd_enable(a):
+    (ok,) = shell_call("EnableExtension", GLib.Variant("(s)", (a.uuid,)),
+                       "b", a.quiet)
+    if not ok:
+        die(f"Extension “{a.uuid}” does not exist", a.quiet)
+
+
+def cmd_disable(a):
+    (ok,) = shell_call("DisableExtension", GLib.Variant("(s)", (a.uuid,)),
+                       "b", a.quiet)
+    if not ok:
+        die(f"Extension “{a.uuid}” does not exist", a.quiet)
+
+
+def cmd_reset(a):
+    settings = Gio.Settings.new("org.gnome.shell")
+    for key in ("enabled-extensions", "disabled-extensions"):
+        vals = settings.get_strv(key)
+        if a.uuid in vals:
+            settings.set_strv(key, [v for v in vals if v != a.uuid])
+    Gio.Settings.sync()
+
+
+def cmd_uninstall(a):
+    info = get_info(a.uuid, a.quiet)
+    if int(info.get("type", 0)) != TYPE_USER:
+        die(f"Cannot uninstall system extensions", a.quiet)
+    (ok,) = shell_call("UninstallExtension", GLib.Variant("(s)", (a.uuid,)),
+                       "b", a.quiet)
+    if not ok:
+        die(f"Failed to uninstall “{a.uuid}”", a.quiet)
+
+
+def cmd_prefs(a):
+    info = get_info(a.uuid, a.quiet)
+    if not info.get("hasPrefs"):
+        die(f"Extension “{a.uuid}” doesn't have preferences", a.quiet)
+    shell_call("OpenExtensionPrefs",
+               GLib.Variant("(ssa{sv})", (a.uuid, "", {})), "", a.quiet)
+
+
+def cmd_errors(a):
+    (errs,) = shell_call("GetExtensionErrors", GLib.Variant("(s)", (a.uuid,)),
+                         "as", a.quiet)
+    for e in errs:
+        print(e)
+
+
+def cmd_install(a):
+    try:
+        zf = zipfile.ZipFile(a.bundle)
+        meta = json.loads(zf.read("metadata.json"))
+        uuid = meta["uuid"]
+    except (OSError, zipfile.BadZipFile, KeyError, ValueError) as e:
+        die(f"Failed to load extension bundle: {e}", a.quiet)
+    if not uuid or "/" in uuid or uuid in (".", ".."):
+        die(f"Invalid extension UUID “{uuid}”", a.quiet)
+    dest = os.path.join(USER_DIR, uuid)
+    if os.path.exists(dest):
+        if not a.force:
+            die(f"{uuid} exists and --force was not specified", a.quiet)
+        shutil.rmtree(dest)
+    os.makedirs(USER_DIR, exist_ok=True)
+    root = os.path.realpath(dest)
+    for name in zf.namelist():
+        target = os.path.realpath(os.path.join(dest, name))
+        if target != root and not target.startswith(root + os.sep):
+            die(f"Refusing unsafe path in bundle: {name}", a.quiet)
+    zf.extractall(dest)
+    if os.path.isdir(os.path.join(dest, "schemas")):
+        subprocess.run(["glib-compile-schemas", os.path.join(dest, "schemas")],
+                       check=False)
+    if a.print_uuid:
+        print(uuid)
+    if not a.quiet:
+        print("Installed. On Wayland, GNOME Shell only discovers new "
+              "extensions at login; an updated extension that is already "
+              "loaded also keeps its old code until then.", file=sys.stderr)
+
+
+def cmd_pack(a):
+    src = os.path.abspath(a.source)
+    try:
+        with open(os.path.join(src, "metadata.json")) as f:
+            meta = json.load(f)
+        uuid = meta["uuid"]
+    except (OSError, KeyError, ValueError) as e:
+        die(f"Failed to read metadata.json: {e}", a.quiet)
+    out = os.path.join(os.path.abspath(a.out_dir or "."),
+                       f"{uuid}.shell-extension.zip")
+    if os.path.exists(out) and not a.force:
+        die(f"{out} exists and --force was not specified", a.quiet)
+
+    files = {}  # archive name -> source path
+    for name in ("metadata.json", "extension.js", "prefs.js",
+                 "stylesheet.css", "stylesheet-dark.css",
+                 "stylesheet-light.css"):
+        if os.path.isfile(os.path.join(src, name)):
+            files[name] = os.path.join(src, name)
+    if "extension.js" not in files:
+        die("Missing extension.js in source directory", a.quiet)
+    for extra in a.extra_source or []:
+        path = os.path.join(src, extra)
+        if os.path.isdir(path):
+            for dirpath, _, names in os.walk(path):
+                for n in names:
+                    full = os.path.join(dirpath, n)
+                    files[os.path.relpath(full, src)] = full
+        elif os.path.isfile(path):
+            files[os.path.basename(extra)] = path
+        else:
+            die(f"No such file or directory: {extra}", a.quiet)
+
+    schemas = [os.path.join(src, s) for s in (a.schema or [])]
+    sdir = os.path.join(src, "schemas")
+    if not schemas and os.path.isdir(sdir):
+        schemas = [os.path.join(sdir, s) for s in os.listdir(sdir)
+                   if s.endswith(".gschema.xml")]
+    for s in schemas:
+        if not os.path.isfile(s):
+            die(f"No such schema: {s}", a.quiet)
+        files[f"schemas/{os.path.basename(s)}"] = s
+
+    with tempfile.TemporaryDirectory() as tmp:
+        podir = os.path.join(src, a.podir or "po")
+        if os.path.isdir(podir):
+            domain = (a.gettext_domain or meta.get("gettext-domain")
+                      or uuid)
+            for po in sorted(os.listdir(podir)):
+                if not po.endswith(".po"):
+                    continue
+                lang = po[:-3]
+                mo_rel = f"locale/{lang}/LC_MESSAGES/{domain}.mo"
+                mo = os.path.join(tmp, mo_rel)
+                os.makedirs(os.path.dirname(mo), exist_ok=True)
+                subprocess.run(["msgfmt", "-o", mo, os.path.join(podir, po)],
+                               check=True)
+                files[mo_rel] = mo
+        elif a.podir:
+            die(f"No such directory: {podir}", a.quiet)
+
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, path in sorted(files.items()):
+                zf.write(path, name)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="gnome-extensions")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    def add(name, fn, *aliases, uuid=True):
+        sp = sub.add_parser(name, aliases=list(aliases))
+        sp.set_defaults(fn=fn)
+        sp.add_argument("-q", "--quiet", action="store_true")
+        if uuid:
+            sp.add_argument("uuid", metavar="UUID")
+        return sp
+
+    sp = add("list", cmd_list, uuid=False)
+    for flag in ("user", "system", "enabled", "disabled", "active",
+                 "inactive", "prefs", "updates"):
+        sp.add_argument(f"--{flag}", action="store_true")
+    sp.add_argument("-d", "--details", action="store_true")
+
+    add("info", cmd_info, "show")
+    add("enable", cmd_enable)
+    add("disable", cmd_disable)
+    add("reset", cmd_reset)
+    add("uninstall", cmd_uninstall)
+    add("prefs", cmd_prefs)
+    add("errors", cmd_errors)
+
+    sp = add("install", cmd_install, uuid=False)
+    sp.add_argument("bundle", metavar="EXTENSION_BUNDLE")
+    sp.add_argument("-f", "--force", action="store_true")
+    sp.add_argument("--print-uuid", action="store_true")
+
+    sp = add("pack", cmd_pack, uuid=False)
+    sp.add_argument("source", metavar="SOURCE_DIRECTORY", nargs="?",
+                    default=".")
+    sp.add_argument("--extra-source", action="append", metavar="FILE")
+    sp.add_argument("--schema", action="append")
+    sp.add_argument("--podir")
+    sp.add_argument("--gettext-domain")
+    sp.add_argument("-f", "--force", action="store_true")
+    sp.add_argument("-o", "--out-dir")
+
+    sub.add_parser("version").set_defaults(
+        fn=lambda a: print("agent-box shim (D-Bus)"))
+
+    a = p.parse_args()
+    if not a.cmd:
+        p.print_help()
+        sys.exit(1)
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

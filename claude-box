@@ -1,15 +1,153 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
+
+# `claude-box --docker ...` (must be the first argument) gives Claude a
+# throwaway container engine to build and run test containers in.
+docker=0
+if [ "${1:-}" = "--docker" ]; then
+  docker=1
+  shift
+fi
+
 abox_parse "$@"
-mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude
+abox_dnf_setup
+mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude \
+  ~/.local/share/agent-box/mise ~/.cache/agent-box/mise
 touch ~/.claude.json
-exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
+
+EXTRA_ARGS=()
+proxy=
+busdir=
+dind=
+dinddir=
+cleanup() {
+  [ -n "$proxy" ] && kill "$proxy" 2>/dev/null
+  [ -n "$busdir" ] && rm -rf -- "$busdir"
+  [ -n "$dind" ] && podman rm -f -t 2 "$dind" >/dev/null 2>&1
+  [ -n "$dinddir" ] && rm -rf -- "$dinddir"
+  return 0
+}
+trap cleanup EXIT
+
+# --- GNOME extension management (always on) --------------------------------
+# Claude can list/enable/disable/install/pack the host's GNOME Shell
+# extensions and use gsettings. Skipped with a warning when there is no
+# session bus, e.g. over ssh.
+gnome_setup() {
+  if ! command -v xdg-dbus-proxy >/dev/null; then
+    echo "claude-box: xdg-dbus-proxy not found; GNOME extension access disabled" >&2
+    return 1
+  fi
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    echo "claude-box: no session bus; GNOME extension access disabled" >&2
+    return 1
+  fi
+
+  # Filtered view of the session bus: only GNOME Shell's extension API and
+  # dconf (so gsettings writes work) are visible. The keyring, systemd --user,
+  # portals, notifications etc. are not reachable from the box.
+  busdir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent-box-bus.XXXXXX")
+  mkfifo "$busdir/sync"
+  # Read end held by us (and inherited by podman). The proxy writes one byte
+  # once it is listening, and exits when every holder of the read end is gone,
+  # so it cannot outlive the session even if this script is killed.
+  exec {sync}<>"$busdir/sync"
+  xdg-dbus-proxy --fd=3 "$DBUS_SESSION_BUS_ADDRESS" "$busdir/bus" \
+    --filter \
+    --talk=org.gnome.Shell.Extensions \
+    --talk=ca.desrt.dconf \
+    3>"$busdir/sync" &
+  proxy=$!
+  if ! read -r -n 1 -t 5 -u "$sync" _; then
+    echo "claude-box: xdg-dbus-proxy failed to start; GNOME extension access disabled" >&2
+    return 1
+  fi
+
+  mkdir -p ~/.local/share/gnome-shell/extensions ~/.config/dconf
+  EXTRA_ARGS+=(
+    # SELinux will not let container_t connect to a socket owned by a host
+    # (unconfined_t) process, so the bus is unreachable with labels on.
+    --security-opt label=disable
+    -v "$busdir:/run/agent-box-bus"
+    -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/agent-box-bus/bus
+    # Installed extensions, read-write.
+    -v "$HOME/.local/share/gnome-shell/extensions:/home/node/.local/share/gnome-shell/extensions"
+    # gsettings reads the dconf db directly; writes go over the bus.
+    -v "$HOME/.config/dconf:/home/node/.config/dconf:ro"
+    # The host's compiled schemas, so gsettings knows org.gnome.shell etc. at
+    # the host's GNOME version.
+    -v /usr/share/glib-2.0/schemas:/usr/share/glib-2.0/schemas:ro
+    -v /usr/share/gnome-shell/extensions:/usr/share/gnome-shell/extensions:ro
+    # Lets the gnome-extensions shim map host paths the shell reports.
+    -e "ABOX_HOST_HOME=$HOME"
+  )
+}
+if ! gnome_setup; then
+  [ -n "$proxy" ] && kill "$proxy" 2>/dev/null
+  proxy=
+fi
+
+# --- Docker (--docker) ------------------------------------------------------
+# A sidecar container runs podman's Docker-compatible API ("docker in
+# docker"). Containers Claude starts live inside the sidecar, not on the host
+# engine: they cannot see host paths beyond the ones the box already has, nor
+# your own containers and images. Everything, images included, is discarded
+# when the session ends.
+DIND_IMAGE=quay.io/podman/stable:latest
+docker_setup() {
+  dinddir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent-box-docker.XXXXXX")
+  mkdir "$dinddir/sock"
+  # The image disables cgroups for nested containers, which makes podman's
+  # Docker-compat build endpoint fail ("cannot set cgroup parent").
+  printf '[containers]\ncgroups = "enabled"\n' >"$dinddir/containers.conf"
+  dind="agent-box-docker-${dinddir##*.}"
+  echo "claude-box: starting docker sidecar ($dind)" >&2
+  # --privileged is needed to nest containers; under rootless podman it only
+  # grants privileges inside your user namespace. Same /work and /mnt mounts
+  # as the box, so `docker run -v /work:...` resolves to the same files.
+  if ! podman run -d --rm --name "$dind" \
+      --privileged --device /dev/fuse \
+      -v "$dinddir/containers.conf:/etc/containers/containers.conf.d/99-agent-box.conf:ro,z" \
+      -v "$dinddir/sock:/run/agent-box-docker:z" \
+      -v "$PWD:/work:z" "${ABOX_MOUNTS[@]}" \
+      "$DIND_IMAGE" \
+      podman system service --time=0 unix:///run/agent-box-docker/docker.sock \
+      >/dev/null; then
+    echo "claude-box: failed to start the docker sidecar" >&2
+    exit 1
+  fi
+  local i
+  for i in $(seq 100); do
+    [ -S "$dinddir/sock/docker.sock" ] && break
+    sleep 0.2
+  done
+  if [ ! -S "$dinddir/sock/docker.sock" ]; then
+    echo "claude-box: docker sidecar did not come up; logs:" >&2
+    podman logs "$dind" >&2 || true
+    exit 1
+  fi
+  EXTRA_ARGS+=(
+    # The socket belongs to another container's process; SELinux would block
+    # the connection with labels on.
+    --security-opt label=disable
+    -v "$dinddir/sock:/run/agent-box-docker"
+    -e DOCKER_HOST=unix:///run/agent-box-docker/docker.sock
+    -e CONTAINER_HOST=unix:///run/agent-box-docker/docker.sock
+  )
+}
+[ "$docker" -eq 1 ] && docker_setup
+
+# Not exec: the EXIT trap has to run to stop the proxy/sidecar and clean up.
+podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${EXTRA_ARGS[@]}" \
   -v "$HOME/.claude:/home/node/.claude:z" \
   -v "$HOME/.claude.json:/home/node/.claude.json:z" \
   -v "$HOME/.local/share/agent-box/claude:/home/node/.local/share/claude:z" \
   -v "$HOME/.cache/agent-box/claude:/home/node/.cache/claude:z" \
+  -v "$HOME/.local/share/agent-box/mise:/home/node/.local/share/mise:z" \
+  -v "$HOME/.cache/agent-box/mise:/home/node/.cache/mise:z" \
   -e ANTHROPIC_API_KEY \
   -e ANTHROPIC_AUTH_TOKEN \
   -e ANTHROPIC_BASE_URL \
+  -e MISE_GITHUB_TOKEN \
   agent-box:latest claude-launch "${ABOX_ARGS[@]}"

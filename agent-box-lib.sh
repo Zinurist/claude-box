@@ -24,6 +24,38 @@ ABOX_COMMON=(
   -e TERM
 )
 
+# Give the box read-only dnf lookups against the host's repos. dnf runs as the
+# unprivileged user in the box, so it can search/query but never install.
+#
+# The repo config is copied, not bind-mounted: some host .repo files carry
+# stray SELinux labels (e.g. user_tmp_t after being moved from /tmp) that
+# container_t may not read, and relabeling /etc with :z is not an option. The
+# copy lives under ~/.cache/agent-box/dnf and is only swapped out when the
+# host's config changed, so concurrent boxes are not disturbed. The metadata
+# cache (~100MB) persists there too, so lookups are fast after the first one.
+abox_dnf_setup() {
+  local me="${0##*/}" st="$HOME/.cache/agent-box/dnf" src dst tmp
+  mkdir -p "$st/cache"
+  for src in /etc/yum.repos.d /etc/pki/rpm-gpg; do
+    dst="$st/${src##*/}"
+    tmp=$(mktemp -d "$st/.stage.XXXXXX")
+    if ! cp -rL -- "$src/." "$tmp/"; then
+      echo "$me: warning: could not copy all of $src; dnf may miss repos" >&2
+    fi
+    if [ -d "$dst" ] && diff -qr -- "$tmp" "$dst" >/dev/null 2>&1; then
+      rm -rf -- "$tmp"
+    else
+      rm -rf -- "$dst"
+      mv -- "$tmp" "$dst"
+    fi
+  done
+  ABOX_COMMON+=(
+    -v "$st/yum.repos.d:/etc/yum.repos.d:ro,z"
+    -v "$st/rpm-gpg:/etc/pki/rpm-gpg:ro,z"
+    -v "$st/cache:/home/node/.cache/libdnf5:z"
+  )
+}
+
 # Populated by abox_parse.
 ABOX_MOUNTS=()
 ABOX_ARGS=()
