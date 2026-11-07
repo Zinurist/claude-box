@@ -25,7 +25,7 @@ One shared image, one wrapper per tool:
 - `pi-box` — runs `pi`, bind-mounts `~/.pi` (settings, auth, models,
   sessions).
 - Each wrapper uses `--userns=keep-id:uid=1000,gid=1000`, `--cap-drop=ALL` and
-  `no-new-privileges`, mounts `$PWD` as `/work`, and forwards any provider API
+  `no-new-privileges`, mounts the working directory (see below), and forwards any provider API
   keys that are set in your environment.
 - `agent-box-lib.sh` — shared argument parsing and the common podman flags,
   sourced by all three wrappers.
@@ -44,10 +44,30 @@ pi-box
 
 Requires `podman` and `~/.local/bin` on your `PATH`.
 
+### Working directory and `~/Projects`
+
+Started anywhere inside `~/Projects`, a box mounts **all of `~/Projects`**
+read-write at its real host path (`/home/you/Projects`) and starts in the
+same directory you are in. So:
+
+- sibling projects work as-is: from `~/Projects/app`, "look at
+  `../lib`" just works;
+- the path in the box matches the host, and Claude Code, pi and opencode key
+  sessions and per-project settings off the working directory. Boxed and
+  un-boxed runs therefore share history: `claude --resume` on the host offers
+  sessions started in the box and vice versa.
+
+That mount is not relabeled for SELinux (`:z` would recursively rewrite the
+labels of the whole tree, possibly including other containers' data), so
+those boxes run with `--security-opt label=disable`. Set `AGENT_BOX_PROJECTS`
+to use a different directory than `~/Projects`.
+
+Started anywhere else, `$PWD` is mounted at `/work` and is the working
+directory, as before.
+
 ### Exposing extra directories
 
-`$PWD` is always mounted at `/work` and is the working directory. To let the
-agent see more of the host, list those paths first and separate them from the
+To let the agent see more of the host, list those paths first and separate them from the
 CLI's own arguments with `--`:
 
 ```
@@ -58,16 +78,18 @@ Each path is mounted read-write at `/mnt/<basename>`:
 
 ```sh
 cd ~/Projects/app
-claude-box ../lib ~/notes -- --resume xyz
-# ~/Projects/app -> /work   (working directory)
-# ~/Projects/lib -> /mnt/lib
+claude-box ~/notes ~/Downloads/data -- --resume xyz
+# ~/Projects     -> same path (working directory: ~/Projects/app)
 # ~/notes        -> /mnt/notes
+# ~/Downloads/data -> /mnt/data
 # runs: claude --resume xyz
 ```
 
 The wrapper prints each mapping to stderr as it starts, so you can tell the
 agent where to look. Duplicate basenames get a numeric suffix (`/mnt/lib-2`),
 and a path that does not exist is a hard error before the container starts.
+Paths inside `~/Projects` are skipped when the box is already in Projects
+mode, since they are visible at their own path.
 
 Without a `--`, every argument goes straight to the CLI and nothing extra is
 mounted — so `claude-box --resume xyz` still works as before.
@@ -153,8 +175,9 @@ repo's Containerfile builds. It is docker-in-docker, not your host's engine:
   your user namespace;
 - the box gets `DOCKER_HOST` and `CONTAINER_HOST` pointing at it, and has the
   `docker`, `docker compose` and `podman` (remote) clients;
-- the sidecar mounts the same `/work` and `/mnt/...` paths as the box, so
-  `docker run -v /work:/src ...` sees the same files. Containers cannot reach
+- the sidecar mounts the same working directory (`~/Projects` or `/work`)
+  and `/mnt/...` paths as the box, so `docker run -v "$PWD:/src" ...` sees the
+  same files. Containers cannot reach
   any other host path, nor your Docker CE or podman containers and images;
 - the sidecar, and every image and container in it, is deleted when the
   session ends, so each session starts with an empty image cache.
@@ -175,8 +198,8 @@ host install of mise:
 | `~/.cache/agent-box/mise` | `~/.cache/mise` |
 
 mise's state, including which config files are trusted, is not persisted.
-Every project is mounted at `/work`, so a persisted trust for
-`/work/mise.toml` would carry over to every other project. The global config
+Outside `~/Projects` every directory is mounted at `/work`, so a persisted
+trust for `/work/mise.toml` would carry over to every other one. The global config
 (`~/.config/mise`) is not persisted either; project `mise.toml` files are the
 way to pin tools. Set `MISE_GITHUB_TOKEN` on the host to avoid GitHub rate
 limits; it is passed through when set. mise itself is updated by rebuilding
@@ -233,11 +256,12 @@ every run by `claude-launch`, which:
   the box to reinstall its dependencies for the container's platform.
 - Paths under `/mnt` do not match their host paths, so a session that refers to
   them is not portable outside the box.
-- Every project is mounted at the same path, `/work`. Both pi and Claude Code
-  key their session/project history off the working directory, so history from
-  different host projects lands in the same bucket (`~/.pi/agent/sessions/`,
-  `~/.claude/projects/-work/`). Harmless, but `--continue`/`--resume` will
-  offer sessions from other projects.
+- Outside `~/Projects`, every directory is mounted at the same path, `/work`.
+  Both pi and Claude Code key their session/project history off the working
+  directory, so history from those directories lands in the same bucket
+  (`~/.pi/agent/sessions/`, `~/.claude/projects/-work/`). Harmless, but
+  `--continue`/`--resume` will offer sessions from other directories. Inside
+  `~/Projects` this does not apply (see above).
 - Only Claude Code auto-updates inside the box. `pi update self` and
   opencode's updater still write to root-owned `/usr/local`, so those two
   are updated by rebuilding the image (`./install.sh`).

@@ -104,13 +104,14 @@ docker_setup() {
   dind="agent-box-docker-${dinddir##*.}"
   echo "claude-box: starting docker sidecar ($dind)" >&2
   # --privileged is needed to nest containers; under rootless podman it only
-  # grants privileges inside your user namespace. Same /work and /mnt mounts
-  # as the box, so `docker run -v /work:...` resolves to the same files.
+  # grants privileges inside your user namespace. Same working-dir and /mnt
+  # mounts as the box, so `docker run -v <path>:...` resolves to the same
+  # files.
   if ! podman run -d --rm --name "$dind" \
       --privileged --device /dev/fuse \
       -v "$dinddir/containers.conf:/etc/containers/containers.conf.d/99-agent-box.conf:ro,z" \
       -v "$dinddir/sock:/run/agent-box-docker:z" \
-      -v "$PWD:/work:z" "${ABOX_MOUNTS[@]}" \
+      "${ABOX_WORK_MOUNTS[@]}" "${ABOX_MOUNTS[@]}" \
       "$DIND_IMAGE" \
       podman system service --time=0 unix:///run/agent-box-docker/docker.sock \
       >/dev/null; then

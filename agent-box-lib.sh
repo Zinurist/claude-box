@@ -5,22 +5,55 @@
 #
 #   <tool>-box [PATH...] [-- CLI_ARG...]
 #
-# $PWD is always mounted at /work and is the working directory. Paths listed
-# before `--` are extra host paths to expose; each is mounted read-write at
+# $PWD is mounted at /work and is the working directory -- except inside
+# ~/Projects, where the whole Projects dir is mounted at its real host path
+# and the box starts in $PWD's real path (see below). Paths listed before `--`
+# are extra host paths to expose; each is mounted read-write at
 # /mnt/<basename>. Everything after `--` is passed to the CLI verbatim.
 #
 # Without a `--`, every argument goes to the CLI, so `claude-box --resume xyz`
 # keeps working.
 
-# Podman flags common to all three wrappers. $PWD is mounted here so it is the
-# one mount every tool gets.
+# Working directory. Started anywhere inside ~/Projects (override with
+# AGENT_BOX_PROJECTS), the box mounts the entire Projects dir at its real host
+# path and starts in $PWD's real path. Sibling projects are then reachable
+# (`../other-project`), and because the path matches the host, Claude Code /
+# pi / opencode key their sessions and per-project settings the same way as
+# the un-boxed CLIs, so history is shared between the two.
+#
+# That mount is not relabeled with :z: it would recursively rewrite the
+# SELinux labels of the whole tree (tens of GB, possibly including other
+# containers' data). The box runs with SELinux labeling disabled instead.
+#
+# Elsewhere $PWD is mounted at /work, as before.
+ABOX_PROJECTS=
+ABOX_WORKDIR=/work
+ABOX_WORK_MOUNTS=(-v "$PWD:/work:z")
+_abox_projects=$(readlink -f -- "${AGENT_BOX_PROJECTS:-$HOME/Projects}" || true)
+_abox_pwd=$(readlink -f -- "$PWD")
+if [ -n "$_abox_projects" ] && [ -d "$_abox_projects" ]; then
+  case "$_abox_pwd/" in
+    "$_abox_projects"/*)
+      ABOX_PROJECTS=$_abox_projects
+      ABOX_WORKDIR=$_abox_pwd
+      ABOX_WORK_MOUNTS=(
+        --security-opt label=disable
+        -v "$ABOX_PROJECTS:$ABOX_PROJECTS"
+      )
+      ;;
+  esac
+fi
+unset _abox_projects _abox_pwd
+
+# Podman flags common to all three wrappers. The working directory is mounted
+# here so it is the one mount every tool gets.
 ABOX_COMMON=(
   --rm -it
   --userns=keep-id:uid=1000,gid=1000
   --security-opt no-new-privileges
   --cap-drop=ALL
-  -v "$PWD:/work:z"
-  -w /work
+  "${ABOX_WORK_MOUNTS[@]}"
+  -w "$ABOX_WORKDIR"
   -e TERM
 )
 
@@ -90,10 +123,19 @@ abox_parse() {
       echo "$me: no such path: $arg" >&2
       return 1
     fi
-    # $PWD is already at /work; don't expose it twice under a second path.
+    # $PWD is already mounted; don't expose it twice under a second path.
     if [ "$real" = "$pwd_real" ]; then
-      echo "$me: $arg is the working directory, already mounted at /work" >&2
+      echo "$me: $arg is the working directory, already mounted at $ABOX_WORKDIR" >&2
       continue
+    fi
+    # Anything in Projects is already visible at its own path.
+    if [ -n "$ABOX_PROJECTS" ]; then
+      case "$real/" in
+        "$ABOX_PROJECTS"/*)
+          echo "$me: $real is already visible at the same path" >&2
+          continue
+          ;;
+      esac
     fi
     name=$(basename -- "$real")
     case "$name" in '' | '/' | '.' | '..') name=root ;; esac
