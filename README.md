@@ -3,6 +3,15 @@
 Run coding-agent CLIs (Claude Code, opencode, pi) inside a rootless Podman
 container, so each only ever sees the directories you hand it.
 
+> [!WARNING]
+> **This project is vibe coded** — I wrote it largely with an AI coding assistant.
+>
+> It is **tailored to my own setup**: Fedora with GNOME on Wayland, rootless Podman, SELinux
+> enforcing, my projects in `~/Projects`, and the particular access I'm comfortable giving an
+> agent (e.g. GNOME extension management, all of `~/Projects`, full network). It is not a
+> general-purpose or hardened sandbox. **Don't use it as is.** Treat it as a starting point and
+> have an AI adapt it to your own system and threat model.
+
 One shared image, one wrapper per tool:
 
 - `Containerfile` — `fedora:44` (matching the host) + Node 24, `git`,
