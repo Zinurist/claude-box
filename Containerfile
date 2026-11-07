@@ -21,7 +21,7 @@ RUN dnf5 install -y --setopt=install_weak_deps=False \
       nodejs24 nodejs24-npm /usr/bin/node /usr/bin/npm \
       git ripgrep jq less zstd which procps-ng hostname findutils tar gzip xz unzip zip \
       glib2 dconf gettext python3-gobject-base \
-      docker-cli docker-compose podman-remote \
+      docker-cli docker-compose podman-remote gh \
  && dnf5 clean all \
  && rm -rf /var/cache/libdnf5/* /var/log/dnf5.log*
 
@@ -71,7 +71,7 @@ COPY claude-launch gnome-extensions /usr/local/bin/
 # binary (e.g. the --allow-scripts list above drifted, which npm only warns
 # about). The claude seed is checked in its own layer above.
 RUN pi --version && opencode --version && mise --version \
- && docker --version && podman --version && node --version | grep -q '^v24\.'
+ && docker --version && podman --version && gh --version && node --version | grep -q '^v24\.'
 
 # Pre-create XDG dirs for the unprivileged user: podman auto-creates missing
 # mount parents as root, which would make e.g. /home/node/.local/state

@@ -214,6 +214,23 @@ repo's Containerfile builds. It is docker-in-docker, not your host's engine:
 `docker build` uses Docker's classic builder (the image deliberately leaves
 out buildx), which podman serves directly; expect a deprecation warning.
 
+## GitHub CLI
+
+`gh` is in the image. `claude-box` gives it its own persistent config dir,
+`~/.config/agent-box/gh` on the host, so log in once from a box and it
+sticks:
+
+```sh
+claude-box --shell -- -c 'gh auth login'
+```
+
+Alternatively, a `GH_TOKEN` set on the host is passed through. Whatever token
+you give it, Claude can do with it what the token allows (comment, open PRs,
+push via the API), so prefer a fine-grained token scoped to the repos you
+want. Git remotes over SSH still won't push from the box (no SSH keys are
+mounted); `gh auth setup-git` plus HTTPS remotes would, but its git config
+is not persisted.
+
 ## mise
 
 [mise](https://mise.jdx.dev) (mise-en-place) is in the image and its shims

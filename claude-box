@@ -20,7 +20,7 @@ done
 abox_parse "$@"
 abox_dnf_setup
 mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude \
-  ~/.local/share/agent-box/mise ~/.cache/agent-box/mise
+  ~/.local/share/agent-box/mise ~/.cache/agent-box/mise ~/.config/agent-box/gh
 touch ~/.claude.json
 
 EXTRA_ARGS=()
@@ -158,9 +158,11 @@ podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${EXTRA_ARGS[@]}" \
   -v "$HOME/.cache/agent-box/claude:/home/node/.cache/claude:z" \
   -v "$HOME/.local/share/agent-box/mise:/home/node/.local/share/mise:z" \
   -v "$HOME/.cache/agent-box/mise:/home/node/.cache/mise:z" \
+  -v "$HOME/.config/agent-box/gh:/home/node/.config/gh:z" \
   -e ANTHROPIC_API_KEY \
   -e ANTHROPIC_AUTH_TOKEN \
   -e ANTHROPIC_BASE_URL \
   -e MISE_GITHUB_TOKEN \
+  -e GH_TOKEN \
   --hostname claude-box \
   agent-box:latest claude-launch "${ABOX_ARGS[@]}"
