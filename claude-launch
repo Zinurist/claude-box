@@ -26,7 +26,15 @@ done
 # The symlink lives in the container's own filesystem, so point it at the
 # newest version in the volume on every run — including one the auto-updater
 # installed during an earlier session.
-newest=$(ls "$versions" | sort -V | tail -n 1)
+#
+# Only consider complete builds: an auto-update interrupted mid-download (e.g.
+# the container exited) leaves an empty, non-executable placeholder that would
+# otherwise sort newest and make exec fail with "Permission denied".
+newest=$(
+  for f in "$versions"/*; do
+    [ -f "$f" ] && [ -s "$f" ] && [ -x "$f" ] && printf '%s\n' "${f##*/}"
+  done | sort -V | tail -n 1
+)
 if [ -z "$newest" ]; then
   echo "claude-box: no claude binary found in $versions" >&2
   exit 1
