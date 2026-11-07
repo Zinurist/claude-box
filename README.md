@@ -159,6 +159,26 @@ sometimes API keys extensions store in their settings) and writable, since
 the bus filter cannot narrow writes to specific keys. An extension the agent
 installs and enables runs as you inside gnome-shell after your next login.
 
+## Shell (`--shell`)
+
+```sh
+claude-box --shell [--docker] [PATH...] [-- BASH_ARG...]
+```
+
+Starts the same box (mounts, GNOME access, dnf, mise, and the docker
+sidecar if `--docker` is given) but runs `bash` instead of Claude, for
+poking around or debugging the box. `claude` still works inside it.
+Arguments after `--` go to bash, so it also runs one-off commands:
+
+```sh
+claude-box --shell -- -c 'dnf provides /usr/bin/gnome-extensions'
+echo 'mise ls' | claude-box --shell
+```
+
+The wrapper flags (`--shell`, `--docker`) come first, in any order, before
+any paths. All wrappers only allocate a TTY (`-t`) when stdin and stdout are
+terminals, so they also work from scripts and agents.
+
 ## Docker (`--docker`)
 
 ```sh

@@ -2,13 +2,20 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 
-# `claude-box --docker ...` (must be the first argument) gives Claude a
-# throwaway container engine to build and run test containers in.
+# Wrapper flags, before any paths:
+#   --docker  give Claude a throwaway container engine for test containers
+#   --shell   same box, but start bash instead of claude; CLI args after `--`
+#             go to bash (e.g. `claude-box --shell -- -c 'make test'`)
 docker=0
-if [ "${1:-}" = "--docker" ]; then
-  docker=1
+shell=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --docker) docker=1 ;;
+    --shell) shell=1 ;;
+    *) break ;;
+  esac
   shift
-fi
+done
 
 abox_parse "$@"
 abox_dnf_setup
@@ -139,6 +146,10 @@ docker_setup() {
 }
 [ "$docker" -eq 1 ] && docker_setup
 
+# claude-launch still seeds/links the claude binary in shell mode, so `claude`
+# works inside the shell, then execs bash with the CLI args instead.
+[ "$shell" -eq 1 ] && EXTRA_ARGS+=(-e ABOX_SHELL=1)
+
 # Not exec: the EXIT trap has to run to stop the proxy/sidecar and clean up.
 podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${EXTRA_ARGS[@]}" \
   -v "$HOME/.claude:/home/node/.claude:z" \
@@ -151,4 +162,5 @@ podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${EXTRA_ARGS[@]}" \
   -e ANTHROPIC_AUTH_TOKEN \
   -e ANTHROPIC_BASE_URL \
   -e MISE_GITHUB_TOKEN \
+  --hostname claude-box \
   agent-box:latest claude-launch "${ABOX_ARGS[@]}"

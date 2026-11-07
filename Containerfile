@@ -19,7 +19,7 @@ FROM registry.fedoraproject.org/fedora:44
 # of starting a BuildKit container whose result never becomes an image.
 RUN dnf5 install -y --setopt=install_weak_deps=False \
       nodejs24 nodejs24-npm /usr/bin/node /usr/bin/npm \
-      git ripgrep jq less zstd which procps-ng findutils tar gzip xz unzip zip \
+      git ripgrep jq less zstd which procps-ng hostname findutils tar gzip xz unzip zip \
       glib2 dconf gettext python3-gobject-base \
       docker-cli docker-compose podman-remote \
  && dnf5 clean all \

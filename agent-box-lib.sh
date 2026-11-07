@@ -47,8 +47,14 @@ unset _abox_projects _abox_pwd
 
 # Podman flags common to all three wrappers. The working directory is mounted
 # here so it is the one mount every tool gets.
+# -t only when there is a terminal: lets scripts and agents run a box
+# non-interactively (podman refuses -t without one).
+ABOX_TTY=(-i)
+if [ -t 0 ] && [ -t 1 ]; then
+  ABOX_TTY=(-it)
+fi
 ABOX_COMMON=(
-  --rm -it
+  --rm "${ABOX_TTY[@]}"
   --userns=keep-id:uid=1000,gid=1000
   --security-opt no-new-privileges
   --cap-drop=ALL

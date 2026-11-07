@@ -41,4 +41,10 @@ if [ -z "$newest" ]; then
 fi
 ln -sfn "$versions/$newest" "$HOME/.local/bin/claude"
 
+# claude-box --shell: same setup, but hand over to bash.
+if [ -n "${ABOX_SHELL:-}" ]; then
+  unset ABOX_SHELL
+  exec bash "$@"
+fi
+
 exec "$HOME/.local/bin/claude" "$@"
