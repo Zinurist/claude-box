@@ -26,6 +26,8 @@ One shared image, one wrapper per tool:
   Claude Code can update itself (see below).
 - `gnome-extensions` — in-image D-Bus replacement for GNOME's CLI, used by
   `claude-box` for extension management (see below).
+- `abox-init` — in-image entry point for `claude-box`: gives Claude a
+  host-unique PID for peer sessions, then drops all privileges (see below).
 - `claude-launch` — in-image launcher that seeds and selects the Claude Code
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
@@ -102,6 +104,45 @@ mode, since they are visible at their own path.
 
 Without a `--`, every argument goes straight to the CLI and nothing extra is
 mounted — so `claude-box --resume xyz` still works as before.
+
+## Talking to other Claude sessions
+
+Claude sessions on this machine can find and message each other (ListAgents
+/ SendMessage): box to box, box to host and host to box. Each box still has
+its own PID namespace, so it sees none of the host's or other boxes'
+processes.
+
+Claude registers each session as `~/.claude/sessions/<pid>.json` with a Unix
+socket at `<socket dir>/<pid>.sock`. It reaches sessions in other PID
+namespaces through those sockets, so two things are needed:
+
+- **A shared socket dir.** `claude-box` mounts the host's
+  `$XDG_RUNTIME_DIR/cc-socks` (or `/tmp/cc-socks-<uid>` without
+  `XDG_RUNTIME_DIR`) at the same path and sets `XDG_RUNTIME_DIR` to match.
+  Sockets are owned by other processes, so the box runs with
+  `--security-opt label=disable`.
+- **A unique PID.** In a plain box Claude would always be PID 1, so every box
+  would claim `1.json` and `1.sock`. The wrapper picks a random PID that is
+  free on the host (not a running process, no existing session file or
+  socket). The box then starts with `abox-init` as root *of its own user
+  namespace* (not host root), with only `SYS_ADMIN`, `SETUID`, `SETGID` and
+  `SETPCAP` and a writable `/proc/sys`. It writes the PID to
+  `/proc/sys/kernel/ns_last_pid`, then drops to the `node` user with every
+  capability set empty (`no-new-privileges` is on as always) and forks
+  Claude, which gets that PID. Nothing privileged keeps running. The
+  narrower `CHECKPOINT_RESTORE` capability would suffice, but SELinux denies
+  it to unlabeled (`spc_t`) containers.
+
+A host PID could in theory be handed to a new host Claude session while a box
+holds the same number. Then the two would overwrite each other's session
+entry. With a few sessions and a random pick from ~4 million PIDs, that's
+very unlikely.
+
+The box's PID 1 forwards stop signals to Claude, so `podman stop` and closing
+the terminal shut Claude down cleanly. If the wrapper itself is terminated,
+it stops its container (named `claude-box-<pid>`). If a box is killed hard,
+the wrapper removes the session entry it left (only box entries, recognisable
+by their empty machine ID in `pidDomain`).
 
 ## Package lookups with dnf
 

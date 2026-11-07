@@ -65,7 +65,7 @@ RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
 # `podman` in the box is the remote client, talking to the --docker sidecar.
 RUN ln -s /usr/bin/podman-remote /usr/local/bin/podman
 
-COPY claude-launch gnome-extensions /usr/local/bin/
+COPY claude-launch gnome-extensions abox-init /usr/local/bin/
 
 # Fail the build loudly if the npm/opencode installs didn't produce a working
 # binary (e.g. the --allow-scripts list above drifted, which npm only warns

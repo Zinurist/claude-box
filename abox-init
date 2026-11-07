@@ -1,0 +1,46 @@
+#!/bin/sh
+# Entry point for claude-box, baked into the image. Runs as root *inside the
+# box's user namespace* (not host root) with only SYS_ADMIN, SETUID, SETGID
+# and SETPCAP, does one privileged thing, then drops everything for good.
+#
+# The one thing: Claude Code names its peer-session files and sockets after
+# its PID (~/.claude/sessions/<pid>.json, cc-socks/<pid>.sock). In a box that
+# PID would always be 1, so every box would collide and none would be
+# reachable. claude-box picks a PID that is free on the host and passes
+# ABOX_NEXT_PID; writing it to ns_last_pid makes the next process forked in
+# this PID namespace get ABOX_NEXT_PID + 1. The box still has its own PID
+# namespace, so it sees none of the host's or other boxes' processes.
+set -eu
+
+if [ -n "${ABOX_NEXT_PID:-}" ]; then
+  if ! echo "$ABOX_NEXT_PID" >/proc/sys/kernel/ns_last_pid 2>/dev/null; then
+    echo "claude-box: could not set the box PID; peer sessions may not see this one" >&2
+  fi
+fi
+unset ABOX_NEXT_PID
+
+# Drop to the node user with no capabilities left (effective, permitted,
+# inheritable, ambient and bounding all empty); no-new-privileges keeps it
+# that way. The shell then *forks* claude-launch rather than exec'ing it, so
+# claude gets the chosen PID; claude-launch execs claude, keeping that PID.
+#
+# That shell stays PID 1 of the box. PID 1 gets no default signal handling,
+# so it traps the stop signals and forwards them; otherwise `podman stop`
+# would hang until SIGKILL and claude could not shut down cleanly (and remove
+# its peer-session entry). `<&0` keeps the terminal as claude's stdin, which
+# a non-interactive shell would otherwise replace with /dev/null for a
+# background job; the job stays in the terminal's foreground process group.
+exec setpriv --reuid=1000 --regid=1000 --clear-groups \
+  --inh-caps=-all --bounding-set=-all \
+  bash -c '
+    trap "kill -TERM \$child 2>/dev/null" TERM HUP INT
+    claude-launch "$@" <&0 &
+    child=$!
+    # wait returns early when a trapped signal arrives; keep waiting for
+    # the real exit status.
+    while :; do
+      wait "$child"
+      status=$?
+      kill -0 "$child" 2>/dev/null || exit "$status"
+    done
+  ' claude-launch "$@"
