@@ -19,6 +19,27 @@ if [ -n "${ABOX_NEXT_PID:-}" ]; then
 fi
 unset ABOX_NEXT_PID
 
+# Give uid 1000 the host's user name instead of the image's "node", so
+# whoami, ssh's default login name (`ssh host` = `ssh $USER@host`) and the
+# like match the host. Only the name changes: the uid and /home/node stay, so
+# every mount is unaffected. The image's own passwd/group are writable here
+# (owned by the box's root); /etc/shadow is not without DAC_OVERRIDE and
+# nothing in the box needs it.
+u=${ABOX_HOST_USER:-}
+unset ABOX_HOST_USER
+case $u in
+  '' | node | *[!a-z0-9_.-]* | [!a-z_]*) ;;
+  *)
+    if getent passwd "$u" >/dev/null || getent group "$u" >/dev/null; then
+      echo "claude-box: user $u already exists in the box; keeping 'node'" >&2
+    elif sed -i "s/^node:/$u:/" /etc/passwd /etc/group 2>/dev/null; then
+      export USER="$u" LOGNAME="$u"
+    else
+      echo "claude-box: could not rename the box user to $u" >&2
+    fi
+    ;;
+esac
+
 # Drop to the node user with no capabilities left (effective, permitted,
 # inheritable, ambient and bounding all empty); no-new-privileges keeps it
 # that way. The shell then *forks* claude-launch rather than exec'ing it, so

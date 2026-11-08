@@ -268,9 +268,24 @@ claude-box --shell -- -c 'gh auth login'
 Alternatively, a `GH_TOKEN` set on the host is passed through. Whatever token
 you give it, Claude can do with it what the token allows (comment, open PRs,
 push via the API), so prefer a fine-grained token scoped to the repos you
-want. Git remotes over SSH still won't push from the box (no SSH keys are
-mounted); `gh auth setup-git` plus HTTPS remotes would, but its git config
-is not persisted.
+want. SSH remotes work through the forwarded ssh-agent (see below).
+
+## SSH agent
+
+`claude-box` forwards the host's ssh-agent (`$SSH_AUTH_SOCK`, on GNOME the
+gcr agent) into the box, so `git` over SSH and `ssh` work with whatever keys
+the agent holds. The key files are never mounted; `~/.ssh/known_hosts` and
+`~/.ssh/config` are, read-only, so host keys and host aliases match the host. The box user (uid 1000, image name `node`) is renamed
+to your host user name at start, so `ssh host` logs in as you, as on the host;
+its home stays `/home/node`.
+
+This means Claude can push to, or log in to, anything your loaded keys can
+reach. To narrow that, load only the keys you want into the agent, or start
+`claude-box` with `SSH_AUTH_SOCK=` to leave the agent out. Without an agent
+the box starts as before, with a warning.
+
+New hosts can't be added to the read-only `known_hosts`; connect once from
+the host first.
 
 ## mise
 

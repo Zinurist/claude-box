@@ -201,8 +201,27 @@ EXTRA_ARGS+=(
   --cap-add=SYS_ADMIN,SETUID,SETGID,SETPCAP
   --security-opt unmask=/proc/sys
   -e HOME=/home/node
+  # abox-init renames the box user ("node") to this, see there.
+  -e "ABOX_HOST_USER=$(id -un)"
 )
 [ -n "$peer_pid" ] && EXTRA_ARGS+=(-e "ABOX_NEXT_PID=$((peer_pid - 1))")
+
+# --- SSH agent (always on) ---------------------------------------------------
+# Forwards the host's ssh-agent socket, so git over SSH and ssh work from the
+# box with whatever keys the agent holds. The key files themselves stay on the
+# host; known_hosts and config are mounted read-only so host keys and host
+# aliases match the host. (label=disable above lets the box reach the socket.)
+if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+  EXTRA_ARGS+=(
+    -v "$SSH_AUTH_SOCK:/run/agent-box-ssh/agent.sock"
+    -e SSH_AUTH_SOCK=/run/agent-box-ssh/agent.sock
+  )
+  for f in known_hosts config; do
+    [ -f ~/.ssh/$f ] && EXTRA_ARGS+=(-v "$HOME/.ssh/$f:/home/node/.ssh/$f:ro")
+  done
+else
+  echo "claude-box: no ssh-agent (SSH_AUTH_SOCK); SSH keys unavailable in the box" >&2
+fi
 
 # Named, so that if this wrapper is terminated (or its terminal closes) it can
 # stop its own container instead of leaving it running unattended; the EXIT
