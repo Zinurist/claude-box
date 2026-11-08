@@ -16,10 +16,16 @@ done
 podman build -t agent-box .
 
 mkdir -p "$HOME/.local/bin"
-cp agent-box-lib.sh "$HOME/.local/bin/agent-box-lib.sh"
+# Replace (write a temp file, then rename) rather than overwrite in place:
+# bash reads a running script incrementally, so a box still running when
+# this is re-run would otherwise continue at its old offset in the new file
+# on exit (e.g. "line 247: OKEN: command not found").
+put() {
+  cp "$1" "$2.new.$$" && chmod "$3" "$2.new.$$" && mv -f "$2.new.$$" "$2"
+}
+put agent-box-lib.sh "$HOME/.local/bin/agent-box-lib.sh" 644
 for tool in claude opencode pi; do
-  cp "$tool-box" "$HOME/.local/bin/$tool-box"
-  chmod +x "$HOME/.local/bin/$tool-box"
+  put "$tool-box" "$HOME/.local/bin/$tool-box" 755
 done
 echo "installed: claude-box, opencode-box, pi-box"
 
