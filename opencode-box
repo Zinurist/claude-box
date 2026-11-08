@@ -4,7 +4,18 @@ set -euo pipefail
 abox_parse "$@"
 abox_dnf_setup
 mkdir -p ~/.config/opencode ~/.local/share/opencode ~/.cache/opencode
-exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
+
+# Use the host's opencode (official installer location) over the copy baked
+# into the image, so updating opencode on the host updates the box too, without
+# rebuilding. Read-only: `opencode upgrade` inside the box can't touch it.
+OPENCODE_BIN=()
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  OPENCODE_BIN=(-v "$(readlink -f -- "$HOME/.opencode/bin/opencode"):/usr/local/bin/opencode:ro,z")
+else
+  echo "opencode-box: no host opencode in ~/.opencode/bin; using the image's copy" >&2
+fi
+
+exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${OPENCODE_BIN[@]}" \
   -v "$HOME/.config/opencode:/home/node/.config/opencode:z" \
   -v "$HOME/.local/share/opencode:/home/node/.local/share/opencode:z" \
   -v "$HOME/.cache/opencode:/home/node/.cache/opencode:z" \

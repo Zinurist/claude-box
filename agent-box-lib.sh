@@ -26,11 +26,23 @@
 # containers' data). The box runs with SELinux labeling disabled instead.
 #
 # Elsewhere $PWD is mounted at /work, as before.
+#
+# Started in $HOME itself, the box uses ~/tmp instead: mounting all of $HOME
+# would expose every private file, and podman refuses to relabel $HOME with :z
+# anyway ("SELinux relabeling of /home/... is not allowed"). Relative PATH
+# arguments are still resolved against the real $PWD.
 ABOX_PROJECTS=
 ABOX_WORKDIR=/work
-ABOX_WORK_MOUNTS=(-v "$PWD:/work:z")
 _abox_projects=$(readlink -f -- "${AGENT_BOX_PROJECTS:-$HOME/Projects}" || true)
 _abox_pwd=$(readlink -f -- "$PWD")
+if [ "$_abox_pwd" = "$(readlink -f -- "$HOME")" ]; then
+  mkdir -p -- "$HOME/tmp"
+  _abox_pwd=$(readlink -f -- "$HOME/tmp")
+  echo "${0##*/}: started in \$HOME; using $_abox_pwd as the working directory" >&2
+fi
+# The host directory the box works in (normally the real $PWD).
+ABOX_HOST_WORKDIR=$_abox_pwd
+ABOX_WORK_MOUNTS=(-v "$_abox_pwd:/work:z")
 if [ -n "$_abox_projects" ] && [ -d "$_abox_projects" ]; then
   case "$_abox_pwd/" in
     "$_abox_projects"/*)
@@ -119,9 +131,8 @@ abox_parse() {
     return 0
   fi
 
-  local pwd_real name dest real n
+  local pwd_real=$ABOX_HOST_WORKDIR name dest real n
   local -A used=()
-  pwd_real=$(readlink -f -- "$PWD")
 
   for arg in "${paths[@]}"; do
     real=$(readlink -f -- "$arg" || true)
@@ -129,7 +140,7 @@ abox_parse() {
       echo "$me: no such path: $arg" >&2
       return 1
     fi
-    # $PWD is already mounted; don't expose it twice under a second path.
+    # The working directory is already mounted; don't expose it twice.
     if [ "$real" = "$pwd_real" ]; then
       echo "$me: $arg is the working directory, already mounted at $ABOX_WORKDIR" >&2
       continue

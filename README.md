@@ -32,7 +32,9 @@ One shared image, one wrapper per tool:
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
   `~/.local/share/opencode` (auth, db, sessions) and `~/.cache/opencode`
-  (helper binaries opencode downloads at startup).
+  (helper binaries opencode downloads at startup). If the host has opencode in
+  `~/.opencode/bin`, that binary is mounted read-only over the image's copy, so
+  the box always runs the version you installed on the host.
 - `pi-box` — runs `pi`, bind-mounts `~/.pi` (settings, auth, models,
   sessions).
 - Each wrapper uses `--userns=keep-id:uid=1000,gid=1000`, `--cap-drop=ALL` and
@@ -74,7 +76,9 @@ those boxes run with `--security-opt label=disable`. Set `AGENT_BOX_PROJECTS`
 to use a different directory than `~/Projects`.
 
 Started anywhere else, `$PWD` is mounted at `/work` and is the working
-directory, as before.
+directory, as before. Started in `$HOME` itself, the box uses `~/tmp` as the
+working directory instead (all of `$HOME` is never mounted, and podman refuses
+to relabel it anyway).
 
 ### Exposing extra directories
 
