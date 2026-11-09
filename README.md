@@ -317,6 +317,14 @@ needs `--security-opt label=disable` like the other host sockets.
 
 Start a box with `WAYLAND_DISPLAY=` to leave it out.
 
+opencode 2 is the exception: it copies its own selections only via OSC 52,
+never `wl-copy`, so in a VTE terminal its "copied to clipboard" copies
+nothing (boxed or not). `opencode-box` therefore turns opencode's mouse
+capture off (`{"mouse":false}` via `OPENCODE_CLI_CONFIG_CONTENT`): the
+terminal selects, and Ctrl+Shift+C copies, as with Claude Code. That costs
+opencode's own mouse handling (clicks, wheel scrolling); start with
+`OPENCODE_BOX_MOUSE=1` to keep it, and Shift+drag to select natively.
+
 ## mise
 
 [mise](https://mise.jdx.dev) (mise-en-place) is in the image and its shims
