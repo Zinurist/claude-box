@@ -30,6 +30,8 @@ One shared image, one wrapper per tool:
   your host user name, gives Claude a host-unique PID for peer sessions
   (`claude-box` only), drops all privileges, and stays PID 1 to forward stop
   signals to the tool (see below).
+- `osc52-bridge` — in-image terminal relay that turns the OSC 52 clipboard
+  writes of opencode and pi into `wl-copy` calls (see Clipboard).
 - `claude-launch` — in-image launcher that seeds and selects the Claude Code
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
@@ -317,13 +319,12 @@ needs `--security-opt label=disable` like the other host sockets.
 
 Start a box with `WAYLAND_DISPLAY=` to leave it out.
 
-opencode 2 is the exception: it copies its own selections only via OSC 52,
-never `wl-copy`, so in a VTE terminal its "copied to clipboard" copies
-nothing (boxed or not). `opencode-box` therefore turns opencode's mouse
-capture off (`{"mouse":false}` via `OPENCODE_CLI_CONFIG_CONTENT`): the
-terminal selects, and Ctrl+Shift+C copies, as with Claude Code. That costs
-opencode's own mouse handling (clicks, wheel scrolling); start with
-`OPENCODE_BOX_MOUSE=1` to keep it, and Shift+drag to select natively.
+Full-screen TUIs are different: opencode captures the mouse (for scrolling),
+so the terminal cannot select, and it copies its own selections only via the
+OSC 52 escape code. VTE terminals ignore that, so "copied to clipboard" would
+copy nothing, boxed or not. `opencode-box` and `pi-box` therefore run the tool
+under `osc52-bridge` (in the image): it relays the terminal unchanged and
+hands every OSC 52 clipboard write to `wl-copy`.
 
 ## mise
 

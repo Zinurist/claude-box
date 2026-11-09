@@ -41,18 +41,8 @@ else
   ABOX_EXTRA+=(-e OPENCODE_CONFIG_CONTENT)
 fi
 
-# Leave the mouse to the terminal, so selecting text and copying works as in
-# Claude Code (Ctrl+Shift+C). opencode 2 copies its own selections only via
-# OSC 52, which VTE terminals (GNOME Terminal, ddterm) ignore, while still
-# reporting "copied to clipboard". The cost is opencode's mouse features
-# (clicking, wheel scrolling). OPENCODE_BOX_MOUSE=1 keeps them; Shift+drag
-# then still selects natively.
-if [ -n "${OPENCODE_CLI_CONFIG_CONTENT:-}" ]; then
-  ABOX_EXTRA+=(-e OPENCODE_CLI_CONFIG_CONTENT)
-elif [ "${OPENCODE_BOX_MOUSE:-0}" != 1 ]; then
-  ABOX_EXTRA+=(-e 'OPENCODE_CLI_CONFIG_CONTENT={"mouse":false}')
-fi
-
-cmd=opencode
-[ "$ABOX_SHELL" -eq 1 ] && cmd=bash
-abox_run "$cmd" "${ABOX_ARGS[@]}"
+# opencode copies its selections only via OSC 52, which VTE terminals (GNOME
+# Terminal, ddterm) ignore; osc52-bridge turns those into wl-copy calls.
+cmd=(osc52-bridge opencode)
+[ "$ABOX_SHELL" -eq 1 ] && cmd=(bash)
+abox_run "${cmd[@]}" "${ABOX_ARGS[@]}"
