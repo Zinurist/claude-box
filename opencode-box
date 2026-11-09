@@ -5,7 +5,7 @@ set -euo pipefail
 # opencode-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
 # Everything common to the boxes is set up in agent-box-lib.sh.
 abox_setup "$@"
-mkdir -p ~/.config/opencode ~/.local/share/opencode ~/.cache/opencode
+mkdir -p ~/.config/opencode ~/.local/share/opencode ~/.local/state/opencode ~/.cache/opencode
 
 # Use the host's opencode (official installer location) over the copy baked
 # into the image, so updating opencode on the host updates the box too, without
@@ -19,6 +19,9 @@ fi
 ABOX_EXTRA+=(
   -v "$HOME/.config/opencode:/home/node/.config/opencode:z"
   -v "$HOME/.local/share/opencode:/home/node/.local/share/opencode:z"
+  # model.json (recent/favorite models, so the last pick sticks), prompt
+  # history and other TUI state.
+  -v "$HOME/.local/state/opencode:/home/node/.local/state/opencode:z"
   -v "$HOME/.cache/opencode:/home/node/.cache/opencode:z"
   -e ANTHROPIC_API_KEY
   -e OPENAI_API_KEY

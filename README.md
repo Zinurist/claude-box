@@ -15,7 +15,7 @@ container, so each only ever sees the directories you hand it.
 One shared image, one wrapper per tool:
 
 - `Containerfile` — `fedora:44` (matching the host) + Node 24, `git`,
-  `ripgrep`, `jq`, `less`, `zstd`, GLib/dconf tooling, plus
+  `ripgrep`, `jq`, `less`, `zstd`, `ffmpeg` (RPM Fusion), `wl-clipboard`, GLib/dconf tooling, plus
   `@earendil-works/pi-coding-agent` (npm), the opencode binary and the Claude
   Code native build (both official installers). Runs as the unprivileged
   `node` user (uid 1000); no entrypoint, the wrapper selects the binary. A
@@ -33,7 +33,8 @@ One shared image, one wrapper per tool:
 - `claude-launch` — in-image launcher that seeds and selects the Claude Code
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
-  `~/.local/share/opencode` (auth, db, sessions) and `~/.cache/opencode`
+  `~/.local/share/opencode` (auth, db, sessions), `~/.local/state/opencode`
+  (last-used models, prompt history) and `~/.cache/opencode`
   (helper binaries opencode downloads at startup). If the host has opencode in
   `~/.opencode/bin`, that binary is mounted read-only over the image's copy, so
   the box always runs the version you installed on the host.
@@ -302,6 +303,19 @@ the box starts as before, with a warning.
 
 New hosts can't be added to the read-only `known_hosts`; connect once from
 the host first.
+
+## Clipboard
+
+Every box gets the host's Wayland socket (`$WAYLAND_DISPLAY`) and the image
+has `wl-clipboard`, so copying text out of Claude Code / opencode / pi and
+pasting images into them works. Without it the tools fall back to the OSC 52
+escape code, which VTE terminals (GNOME Terminal, ddterm) ignore, so "copied
+to clipboard" would copy nothing. The socket belongs to gnome-shell, so this
+needs `--security-opt label=disable` like the other host sockets.
+
+This lets the agent read your clipboard at any time (`wl-paste`), including
+passwords copied from a password manager, and open windows on your desktop.
+Start a box with `WAYLAND_DISPLAY=` to leave it out.
 
 ## mise
 

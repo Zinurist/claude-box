@@ -13,6 +13,9 @@ FROM registry.fedoraproject.org/fedora:44
 # gnome-extensions shim below. (The real gnome-extensions CLI lives in the
 # gnome-shell package, which pulls in mutter, gjs and much more.)
 #
+# wl-clipboard: the CLIs copy and paste (text and images) with wl-copy and
+# wl-paste over the host's Wayland socket, which the wrappers mount.
+#
 # docker/podman clients for `<tool>-box --docker`, which points them at a
 # sidecar engine. No docker-buildx (weak deps are off): without it `docker
 # build` uses the classic builder, which podman's API serves directly, instead
@@ -21,7 +24,15 @@ RUN dnf5 install -y --setopt=install_weak_deps=False \
       nodejs24 nodejs24-npm /usr/bin/node /usr/bin/npm \
       git openssh-clients rsync ripgrep jq less zstd which procps-ng hostname findutils tar gzip xz unzip zip \
       glib2 dconf gettext python3-gobject-base \
-      docker-cli docker-compose podman-remote gh \
+      docker-cli docker-compose podman-remote gh wl-clipboard \
+ && dnf5 clean all \
+ && rm -rf /var/cache/libdnf5/* /var/log/dnf5.log*
+
+# ffmpeg from RPM Fusion, like the host: Fedora's own ffmpeg-free lacks the
+# patent-encumbered codecs (H.264/HEVC encoders etc.).
+RUN dnf5 install -y \
+      "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+ && dnf5 install -y --setopt=install_weak_deps=False ffmpeg \
  && dnf5 clean all \
  && rm -rf /var/cache/libdnf5/* /var/log/dnf5.log*
 
@@ -71,7 +82,8 @@ COPY claude-launch gnome-extensions abox-init /usr/local/bin/
 # binary (e.g. the --allow-scripts list above drifted, which npm only warns
 # about). The claude seed is checked in its own layer above.
 RUN pi --version && opencode --version && mise --version \
- && docker --version && podman --version && gh --version && node --version | grep -q '^v24\.'
+ && docker --version && podman --version && gh --version && ffmpeg -version \
+ && wl-copy --version && node --version | grep -q '^v24\.'
 
 # Pre-create XDG dirs for the unprivileged user: podman auto-creates missing
 # mount parents as root, which would make e.g. /home/node/.local/state

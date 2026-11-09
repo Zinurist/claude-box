@@ -244,6 +244,7 @@ abox_setup() {
   abox_ssh_setup
   abox_user_setup
   abox_tools_setup
+  abox_wayland_setup
   if ! abox_gnome_setup; then
     [ -n "$_abox_proxy" ] && kill "$_abox_proxy" 2>/dev/null
     _abox_proxy=
@@ -278,6 +279,32 @@ abox_tools_setup() {
     -v "$HOME/.config/agent-box/gh:/home/node/.config/gh:z"
     -e MISE_GITHUB_TOKEN
     -e GH_TOKEN
+  )
+}
+
+# --- Clipboard (always on) ------------------------------------------------------
+# Mounts the host's Wayland socket so wl-copy/wl-paste work: copying text out
+# of the TUIs and pasting images into them. Without it, the tools fall back to
+# OSC 52, which VTE terminals (GNOME Terminal, ddterm) ignore. Start with
+# WAYLAND_DISPLAY= to leave it out.
+abox_wayland_setup() {
+  local sock=${WAYLAND_DISPLAY:-}
+  if [ -z "$sock" ]; then
+    echo "$ABOX_ME: no Wayland session; clipboard unavailable in the box" >&2
+    return 0
+  fi
+  case $sock in /*) ;; *) sock=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$sock ;; esac
+  if [ ! -S "$sock" ]; then
+    echo "$ABOX_ME: Wayland socket $sock not found; clipboard unavailable in the box" >&2
+    return 0
+  fi
+  ABOX_EXTRA+=(
+    # The socket belongs to gnome-shell; SELinux would block it with labels on.
+    --security-opt label=disable
+    -v "$sock:/run/agent-box-wayland/wayland-0"
+    # An absolute path, so it does not depend on XDG_RUNTIME_DIR (which
+    # claude-box sets to the host's for peer sessions).
+    -e WAYLAND_DISPLAY=/run/agent-box-wayland/wayland-0
   )
 }
 
