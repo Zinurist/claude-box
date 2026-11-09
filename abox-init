@@ -1,20 +1,24 @@
 #!/bin/sh
-# Entry point for claude-box, baked into the image. Runs as root *inside the
-# box's user namespace* (not host root) with only SYS_ADMIN, SETUID, SETGID
-# and SETPCAP, does one privileged thing, then drops everything for good.
+# Entry point for every box (claude-box, opencode-box, pi-box), baked into
+# the image:
 #
-# The one thing: Claude Code names its peer-session files and sockets after
+#   abox-init COMMAND [ARG...]
+#
+# Runs as root *inside the box's user namespace* (not host root) with only
+# SETUID, SETGID and SETPCAP (plus SYS_ADMIN for claude-box), does a little
+# setup, then drops everything for good and runs COMMAND as uid 1000.
+set -eu
+
+# claude-box only: Claude Code names its peer-session files and sockets after
 # its PID (~/.claude/sessions/<pid>.json, cc-socks/<pid>.sock). In a box that
-# PID would always be 1, so every box would collide and none would be
+# PID would always be the same, so every box would collide and none would be
 # reachable. claude-box picks a PID that is free on the host and passes
 # ABOX_NEXT_PID; writing it to ns_last_pid makes the next process forked in
 # this PID namespace get ABOX_NEXT_PID + 1. The box still has its own PID
 # namespace, so it sees none of the host's or other boxes' processes.
-set -eu
-
 if [ -n "${ABOX_NEXT_PID:-}" ]; then
   if ! echo "$ABOX_NEXT_PID" >/proc/sys/kernel/ns_last_pid 2>/dev/null; then
-    echo "claude-box: could not set the box PID; peer sessions may not see this one" >&2
+    echo "abox-init: could not set the box PID; peer sessions may not see this one" >&2
   fi
 fi
 unset ABOX_NEXT_PID
@@ -31,31 +35,36 @@ case $u in
   '' | node | *[!a-z0-9_.-]* | [!a-z_]*) ;;
   *)
     if getent passwd "$u" >/dev/null || getent group "$u" >/dev/null; then
-      echo "claude-box: user $u already exists in the box; keeping 'node'" >&2
+      echo "abox-init: user $u already exists in the box; keeping 'node'" >&2
     elif sed -i "s/^node:/$u:/" /etc/passwd /etc/group 2>/dev/null; then
       export USER="$u" LOGNAME="$u"
     else
-      echo "claude-box: could not rename the box user to $u" >&2
+      echo "abox-init: could not rename the box user to $u" >&2
     fi
     ;;
 esac
 
-# Drop to the node user with no capabilities left (effective, permitted,
+if [ $# -eq 0 ]; then
+  echo "abox-init: no command given" >&2
+  exit 2
+fi
+
+# Drop to uid 1000 with no capabilities left (effective, permitted,
 # inheritable, ambient and bounding all empty); no-new-privileges keeps it
-# that way. The shell then *forks* claude-launch rather than exec'ing it, so
-# claude gets the chosen PID; claude-launch execs claude, keeping that PID.
+# that way. The shell then *forks* COMMAND rather than exec'ing it, so it gets
+# the chosen PID (claude-launch execs claude, keeping that PID).
 #
 # That shell stays PID 1 of the box. PID 1 gets no default signal handling,
 # so it traps the stop signals and forwards them; otherwise `podman stop`
-# would hang until SIGKILL and claude could not shut down cleanly (and remove
-# its peer-session entry). `<&0` keeps the terminal as claude's stdin, which
-# a non-interactive shell would otherwise replace with /dev/null for a
-# background job; the job stays in the terminal's foreground process group.
+# would hang until SIGKILL and the tool could not shut down cleanly. `<&0`
+# keeps the terminal as the tool's stdin, which a non-interactive shell would
+# otherwise replace with /dev/null for a background job; the job stays in the
+# terminal's foreground process group.
 exec setpriv --reuid=1000 --regid=1000 --clear-groups \
   --inh-caps=-all --bounding-set=-all \
   bash -c '
     trap "kill -TERM \$child 2>/dev/null" TERM HUP INT
-    claude-launch "$@" <&0 &
+    "$@" <&0 &
     child=$!
     # wait returns early when a trapped signal arrives; keep waiting for
     # the real exit status.
@@ -64,4 +73,4 @@ exec setpriv --reuid=1000 --regid=1000 --clear-groups \
       status=$?
       kill -0 "$child" 2>/dev/null || exit "$status"
     done
-  ' claude-launch "$@"
+  ' abox-init "$@"

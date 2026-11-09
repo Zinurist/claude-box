@@ -2,35 +2,31 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 
-# Wrapper flags, before any paths:
-#   --docker  give Claude a throwaway container engine for test containers
-#   --shell   same box, but start bash instead of claude; CLI args after `--`
-#             go to bash (e.g. `claude-box --shell -- -c 'make test'`)
-docker=0
-shell=0
-while [ $# -gt 0 ]; do
-  case $1 in
-    --docker) docker=1 ;;
-    --shell) shell=1 ;;
-    *) break ;;
-  esac
-  shift
-done
-
-abox_parse "$@"
-abox_dnf_setup
-mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude \
-  ~/.local/share/agent-box/mise ~/.cache/agent-box/mise ~/.config/agent-box/gh
+# claude-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
+# Everything common to the boxes (flags, mounts, ssh, GNOME, docker, gh,
+# mise, ...) is set up in agent-box-lib.sh; this adds Claude Code's own state
+# and peer sessions.
+abox_setup "$@"
+mkdir -p ~/.claude ~/.local/share/agent-box/claude ~/.cache/agent-box/claude
 touch ~/.claude.json
 
-EXTRA_ARGS=()
-proxy=
-busdir=
-dind=
-dinddir=
+# claude-launch still seeds/links the claude binary in shell mode, so `claude`
+# works inside the shell, then execs bash with the CLI args instead.
+[ "$ABOX_SHELL" -eq 1 ] && ABOX_EXTRA+=(-e ABOX_SHELL=1)
+
+# --- Peer sessions -----------------------------------------------------------
+# Lets this box's Claude find and message other Claude sessions on this
+# machine, boxed or not (ListAgents / SendMessage), without seeing any host
+# processes:
+#  - the host's Claude socket dir is mounted at the same path, so peers can
+#    connect to each other's sockets;
+#  - abox-init gives claude a PID that is free on the host instead of a fixed
+#    one, since session files and sockets are named after the PID. The box
+#    keeps its own PID namespace. Claude reaches sessions in other namespaces
+#    through their sockets, not by signalling the PID.
 peer_pid=
 peer_sockdir=
-cleanup() {
+peer_cleanup() {
   # A box that was killed (not exited) leaves its peer-session entry behind.
   # Claude ignores dead entries, but tidy up ours. The pidDomain check makes
   # sure the file is a box session (boxes have no machine-id), never a host
@@ -39,141 +35,13 @@ cleanup() {
     rm -f ~/.claude/sessions/"$peer_pid".json ~/.claude/sessions/"$peer_pid".*.key \
       "$peer_sockdir/$peer_pid.sock"
   fi
-  [ -n "$proxy" ] && kill "$proxy" 2>/dev/null
-  [ -n "$busdir" ] && rm -rf -- "$busdir"
-  [ -n "$dind" ] && podman rm -f -t 2 "$dind" >/dev/null 2>&1
-  [ -n "$dinddir" ] && rm -rf -- "$dinddir"
-  return 0
 }
-trap cleanup EXIT
+ABOX_CLEANUP_HOOK=peer_cleanup
 
-# --- GNOME extension management (always on) --------------------------------
-# Claude can list/enable/disable/install/pack the host's GNOME Shell
-# extensions and use gsettings. Skipped with a warning when there is no
-# session bus, e.g. over ssh.
-gnome_setup() {
-  if ! command -v xdg-dbus-proxy >/dev/null; then
-    echo "claude-box: xdg-dbus-proxy not found; GNOME extension access disabled" >&2
-    return 1
-  fi
-  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-    echo "claude-box: no session bus; GNOME extension access disabled" >&2
-    return 1
-  fi
-
-  # Filtered view of the session bus: only GNOME Shell's extension API and
-  # dconf (so gsettings writes work) are visible. The keyring, systemd --user,
-  # portals, notifications etc. are not reachable from the box.
-  busdir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent-box-bus.XXXXXX")
-  mkfifo "$busdir/sync"
-  # Read end held by us (and inherited by podman). The proxy writes one byte
-  # once it is listening, and exits when every holder of the read end is gone,
-  # so it cannot outlive the session even if this script is killed.
-  exec {sync}<>"$busdir/sync"
-  xdg-dbus-proxy --fd=3 "$DBUS_SESSION_BUS_ADDRESS" "$busdir/bus" \
-    --filter \
-    --talk=org.gnome.Shell.Extensions \
-    --talk=ca.desrt.dconf \
-    3>"$busdir/sync" &
-  proxy=$!
-  if ! read -r -n 1 -t 5 -u "$sync" _; then
-    echo "claude-box: xdg-dbus-proxy failed to start; GNOME extension access disabled" >&2
-    return 1
-  fi
-
-  mkdir -p ~/.local/share/gnome-shell/extensions ~/.config/dconf
-  EXTRA_ARGS+=(
-    # SELinux will not let container_t connect to a socket owned by a host
-    # (unconfined_t) process, so the bus is unreachable with labels on.
-    --security-opt label=disable
-    -v "$busdir:/run/agent-box-bus"
-    -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/agent-box-bus/bus
-    # Installed extensions, read-write.
-    -v "$HOME/.local/share/gnome-shell/extensions:/home/node/.local/share/gnome-shell/extensions"
-    # gsettings reads the dconf db directly; writes go over the bus.
-    -v "$HOME/.config/dconf:/home/node/.config/dconf:ro"
-    # The host's compiled schemas, so gsettings knows org.gnome.shell etc. at
-    # the host's GNOME version.
-    -v /usr/share/glib-2.0/schemas:/usr/share/glib-2.0/schemas:ro
-    -v /usr/share/gnome-shell/extensions:/usr/share/gnome-shell/extensions:ro
-    # Lets the gnome-extensions shim map host paths the shell reports.
-    -e "ABOX_HOST_HOME=$HOME"
-  )
-}
-if ! gnome_setup; then
-  [ -n "$proxy" ] && kill "$proxy" 2>/dev/null
-  proxy=
-fi
-
-# --- Docker (--docker) ------------------------------------------------------
-# A sidecar container runs podman's Docker-compatible API ("docker in
-# docker"). Containers Claude starts live inside the sidecar, not on the host
-# engine: they cannot see host paths beyond the ones the box already has, nor
-# your own containers and images. Everything, images included, is discarded
-# when the session ends.
-DIND_IMAGE=quay.io/podman/stable:latest
-docker_setup() {
-  dinddir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent-box-docker.XXXXXX")
-  mkdir "$dinddir/sock"
-  # The image disables cgroups for nested containers, which makes podman's
-  # Docker-compat build endpoint fail ("cannot set cgroup parent").
-  printf '[containers]\ncgroups = "enabled"\n' >"$dinddir/containers.conf"
-  dind="agent-box-docker-${dinddir##*.}"
-  echo "claude-box: starting docker sidecar ($dind)" >&2
-  # --privileged is needed to nest containers; under rootless podman it only
-  # grants privileges inside your user namespace. Same working-dir and /mnt
-  # mounts as the box, so `docker run -v <path>:...` resolves to the same
-  # files.
-  if ! podman run -d --rm --name "$dind" \
-      --privileged --device /dev/fuse \
-      -v "$dinddir/containers.conf:/etc/containers/containers.conf.d/99-agent-box.conf:ro,z" \
-      -v "$dinddir/sock:/run/agent-box-docker:z" \
-      "${ABOX_WORK_MOUNTS[@]}" "${ABOX_MOUNTS[@]}" \
-      "$DIND_IMAGE" \
-      podman system service --time=0 unix:///run/agent-box-docker/docker.sock \
-      >/dev/null; then
-    echo "claude-box: failed to start the docker sidecar" >&2
-    exit 1
-  fi
-  local i
-  for i in $(seq 100); do
-    [ -S "$dinddir/sock/docker.sock" ] && break
-    sleep 0.2
-  done
-  if [ ! -S "$dinddir/sock/docker.sock" ]; then
-    echo "claude-box: docker sidecar did not come up; logs:" >&2
-    podman logs "$dind" >&2 || true
-    exit 1
-  fi
-  EXTRA_ARGS+=(
-    # The socket belongs to another container's process; SELinux would block
-    # the connection with labels on.
-    --security-opt label=disable
-    -v "$dinddir/sock:/run/agent-box-docker"
-    -e DOCKER_HOST=unix:///run/agent-box-docker/docker.sock
-    -e CONTAINER_HOST=unix:///run/agent-box-docker/docker.sock
-  )
-}
-[ "$docker" -eq 1 ] && docker_setup
-
-# claude-launch still seeds/links the claude binary in shell mode, so `claude`
-# works inside the shell, then execs bash with the CLI args instead.
-[ "$shell" -eq 1 ] && EXTRA_ARGS+=(-e ABOX_SHELL=1)
-
-# --- Peer sessions -----------------------------------------------------------
-# Lets this box's Claude find and message other Claude sessions on this
-# machine, boxed or not (ListAgents / SendMessage), without seeing any host
-# processes:
-#  - the host's Claude socket dir is mounted at the same path, so peers can
-#    connect to each other's sockets;
-#  - abox-init gives claude a PID that is free on the host instead of 1, since
-#    session files and sockets are named after the PID. The box keeps its own
-#    PID namespace. Claude reaches sessions in other namespaces through their
-#    sockets, not by signalling the PID.
 uid=$(id -u)
 if [ "${XDG_RUNTIME_DIR:-}" = "/run/user/$uid" ]; then
   peer_sockdir=$XDG_RUNTIME_DIR/cc-socks
-  EXTRA_ARGS+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+  ABOX_EXTRA+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
 else
   # Where Claude puts its sockets without XDG_RUNTIME_DIR, on host and box.
   peer_sockdir=/tmp/cc-socks-$uid
@@ -190,59 +58,28 @@ for _ in $(seq 50); do
     break
   fi
 done
-EXTRA_ARGS+=(
+ABOX_EXTRA+=(
   -v "$peer_sockdir:$peer_sockdir"
   # The sockets belong to processes outside this container's SELinux context.
   --security-opt label=disable
-  # abox-init starts as root of the box's user namespace (not host root) with
-  # just these capabilities, sets the PID, and drops all of them before
-  # anything else runs. /proc/sys is read-only in containers by default.
-  --user 0:0
-  --cap-add=SYS_ADMIN,SETUID,SETGID,SETPCAP
+  # On top of the common abox-init capabilities: SYS_ADMIN and a writable
+  # /proc/sys to set the PID (/proc/sys is read-only in containers by
+  # default). abox-init drops all of them before anything else runs.
+  --cap-add=SYS_ADMIN
   --security-opt unmask=/proc/sys
-  -e HOME=/home/node
-  # abox-init renames the box user ("node") to this, see there.
-  -e "ABOX_HOST_USER=$(id -un)"
 )
-[ -n "$peer_pid" ] && EXTRA_ARGS+=(-e "ABOX_NEXT_PID=$((peer_pid - 1))")
-
-# --- SSH agent (always on) ---------------------------------------------------
-# Forwards the host's ssh-agent socket, so git over SSH and ssh work from the
-# box with whatever keys the agent holds. The key files themselves stay on the
-# host; known_hosts and config are mounted read-only so host keys and host
-# aliases match the host. (label=disable above lets the box reach the socket.)
-if [ -S "${SSH_AUTH_SOCK:-}" ]; then
-  EXTRA_ARGS+=(
-    -v "$SSH_AUTH_SOCK:/run/agent-box-ssh/agent.sock"
-    -e SSH_AUTH_SOCK=/run/agent-box-ssh/agent.sock
-  )
-  for f in known_hosts config; do
-    [ -f ~/.ssh/$f ] && EXTRA_ARGS+=(-v "$HOME/.ssh/$f:/home/node/.ssh/$f:ro")
-  done
-else
-  echo "claude-box: no ssh-agent (SSH_AUTH_SOCK); SSH keys unavailable in the box" >&2
+if [ -n "$peer_pid" ]; then
+  ABOX_EXTRA+=(-e "ABOX_NEXT_PID=$((peer_pid - 1))")
+  ABOX_NAME=claude-box-$peer_pid
 fi
 
-# Named, so that if this wrapper is terminated (or its terminal closes) it can
-# stop its own container instead of leaving it running unattended; the EXIT
-# trap then cleans up as usual.
-box_name="claude-box-${peer_pid:-$$}"
-EXTRA_ARGS+=(--name "$box_name")
-trap 'podman stop -t 10 "$box_name" >/dev/null 2>&1; exit 143' TERM HUP
-
-# Not exec: the EXIT trap has to run to stop the proxy/sidecar and clean up.
-podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" "${EXTRA_ARGS[@]}" \
-  -v "$HOME/.claude:/home/node/.claude:z" \
-  -v "$HOME/.claude.json:/home/node/.claude.json:z" \
-  -v "$HOME/.local/share/agent-box/claude:/home/node/.local/share/claude:z" \
-  -v "$HOME/.cache/agent-box/claude:/home/node/.cache/claude:z" \
-  -v "$HOME/.local/share/agent-box/mise:/home/node/.local/share/mise:z" \
-  -v "$HOME/.cache/agent-box/mise:/home/node/.cache/mise:z" \
-  -v "$HOME/.config/agent-box/gh:/home/node/.config/gh:z" \
-  -e ANTHROPIC_API_KEY \
-  -e ANTHROPIC_AUTH_TOKEN \
-  -e ANTHROPIC_BASE_URL \
-  -e MISE_GITHUB_TOKEN \
-  -e GH_TOKEN \
-  --hostname claude-box \
-  agent-box:latest abox-init "${ABOX_ARGS[@]}"
+ABOX_EXTRA+=(
+  -v "$HOME/.claude:/home/node/.claude:z"
+  -v "$HOME/.claude.json:/home/node/.claude.json:z"
+  -v "$HOME/.local/share/agent-box/claude:/home/node/.local/share/claude:z"
+  -v "$HOME/.cache/agent-box/claude:/home/node/.cache/claude:z"
+  -e ANTHROPIC_API_KEY
+  -e ANTHROPIC_AUTH_TOKEN
+  -e ANTHROPIC_BASE_URL
+)
+abox_run claude-launch "${ABOX_ARGS[@]}"

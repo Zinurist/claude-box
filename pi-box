@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
-abox_parse "$@"
-abox_dnf_setup
+
+# pi-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
+# Everything common to the boxes is set up in agent-box-lib.sh.
+abox_setup "$@"
 mkdir -p ~/.pi
-exec podman run "${ABOX_COMMON[@]}" "${ABOX_MOUNTS[@]}" \
-  -v "$HOME/.pi:/home/node/.pi:z" \
-  -e ANTHROPIC_API_KEY \
-  -e OPENAI_API_KEY \
-  -e GEMINI_API_KEY \
-  -e GOOGLE_GENERATIVE_AI_API_KEY \
-  -e OPENROUTER_API_KEY \
-  -e GROQ_API_KEY \
-  agent-box:latest pi "${ABOX_ARGS[@]}"
+ABOX_EXTRA+=(
+  -v "$HOME/.pi:/home/node/.pi:z"
+  -e ANTHROPIC_API_KEY
+  -e OPENAI_API_KEY
+  -e GEMINI_API_KEY
+  -e GOOGLE_GENERATIVE_AI_API_KEY
+  -e OPENROUTER_API_KEY
+  -e GROQ_API_KEY
+)
+cmd=pi
+[ "$ABOX_SHELL" -eq 1 ] && cmd=bash
+abox_run "$cmd" "${ABOX_ARGS[@]}"

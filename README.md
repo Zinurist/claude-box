@@ -24,10 +24,12 @@ One shared image, one wrapper per tool:
 - `claude-box` — runs `claude`, bind-mounts your host `~/.claude` /
   `~/.claude.json` so config and auth persist, plus the native install dirs so
   Claude Code can update itself (see below).
-- `gnome-extensions` — in-image D-Bus replacement for GNOME's CLI, used by
-  `claude-box` for extension management (see below).
-- `abox-init` — in-image entry point for `claude-box`: gives Claude a
-  host-unique PID for peer sessions, then drops all privileges (see below).
+- `gnome-extensions` — in-image D-Bus replacement for GNOME's CLI, used for
+  extension management (see below).
+- `abox-init` — in-image entry point for every box: renames the box user to
+  your host user name, gives Claude a host-unique PID for peer sessions
+  (`claude-box` only), drops all privileges, and stays PID 1 to forward stop
+  signals to the tool (see below).
 - `claude-launch` — in-image launcher that seeds and selects the Claude Code
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
@@ -40,8 +42,10 @@ One shared image, one wrapper per tool:
 - Each wrapper uses `--userns=keep-id:uid=1000,gid=1000`, `--cap-drop=ALL` and
   `no-new-privileges`, mounts the working directory (see below), and forwards any provider API
   keys that are set in your environment.
-- `agent-box-lib.sh` — shared argument parsing and the common podman flags,
-  sourced by all three wrappers.
+- `agent-box-lib.sh` — everything the boxes share: wrapper flags and argument
+  parsing, the common podman flags, dnf, ssh-agent, GNOME, `--docker`, gh and
+  mise. Sourced by all three wrappers, which only add their tool's own state
+  (and, for `claude-box`, peer sessions).
 - `install.sh` — builds the image, installs the wrappers (and the shared
   lib) to `~/.local/bin/`, and maintains the shell aliases in `~/.bashrc`.
 
@@ -54,6 +58,8 @@ claude-box              # any args are passed through to the CLI
 opencode-box run ...
 pi-box
 ```
+
+Everything below applies to all three boxes unless it says `claude-box`.
 
 Requires `podman` and `~/.local/bin` on your `PATH`.
 
@@ -142,11 +148,14 @@ holds the same number. Then the two would overwrite each other's session
 entry. With a few sessions and a random pick from ~4 million PIDs, that's
 very unlikely.
 
-The box's PID 1 forwards stop signals to Claude, so `podman stop` and closing
-the terminal shut Claude down cleanly. If the wrapper itself is terminated,
-it stops its container (named `claude-box-<pid>`). If a box is killed hard,
-the wrapper removes the session entry it left (only box entries, recognisable
-by their empty machine ID in `pidDomain`).
+This is Claude Code–specific, so only `claude-box` does it. If a box is
+killed hard, the wrapper removes the session entry it left (only box entries,
+recognisable by their empty machine ID in `pidDomain`).
+
+In every box, `abox-init` is PID 1 and forwards stop signals to the tool, so
+`podman stop` and closing the terminal shut it down cleanly. If the wrapper
+itself is terminated, it stops its container (named `<tool>-box-<pid>`; for
+`claude-box` the pid is Claude's).
 
 ## Package lookups with dnf
 
@@ -175,8 +184,8 @@ After a host upgrade, bump the `FROM` line and re-run `./install.sh`.
 
 ## Managing GNOME extensions
 
-`claude-box` always lets Claude manage the host's GNOME Shell extensions. To
-do that, it:
+Every box always lets the agent manage the host's GNOME Shell extensions. To
+do that, the wrapper:
 
 - starts an `xdg-dbus-proxy` on the host that exposes **only**
   `org.gnome.Shell.Extensions` and `ca.desrt.dconf` from your session bus.
@@ -216,12 +225,13 @@ installs and enables runs as you inside gnome-shell after your next login.
 ## Shell (`--shell`)
 
 ```sh
-claude-box --shell [--docker] [PATH...] [-- BASH_ARG...]
+<tool>-box --shell [--docker] [PATH...] [-- BASH_ARG...]
 ```
 
 Starts the same box (mounts, GNOME access, dnf, mise, and the docker
-sidecar if `--docker` is given) but runs `bash` instead of Claude, for
-poking around or debugging the box. `claude` still works inside it.
+sidecar if `--docker` is given) but runs `bash` instead of the tool, for
+poking around or debugging the box. The tool still works inside it (in
+`claude-box`, `claude` is seeded and linked first).
 Arguments after `--` go to bash, so it also runs one-off commands:
 
 ```sh
@@ -236,10 +246,10 @@ terminals, so they also work from scripts and agents.
 ## Docker (`--docker`)
 
 ```sh
-claude-box --docker [PATH...] [-- CLI_ARG...]
+<tool>-box --docker [PATH...] [-- CLI_ARG...]
 ```
 
-`--docker` (must be the first argument) gives Claude a throwaway container
+`--docker` gives the agent a throwaway container
 engine for building and running test containers, e.g. to check that this
 repo's Containerfile builds. It is docker-in-docker, not your host's engine:
 
@@ -261,31 +271,33 @@ out buildx), which podman serves directly; expect a deprecation warning.
 
 ## GitHub CLI
 
-`gh` is in the image. `claude-box` gives it its own persistent config dir,
-`~/.config/agent-box/gh` on the host, so log in once from a box and it
-sticks:
+`gh` is in the image. The boxes give it their own persistent config dir,
+`~/.config/agent-box/gh` on the host, shared by all three, so log in once
+from a box and it sticks:
 
 ```sh
 claude-box --shell -- -c 'gh auth login'
 ```
 
 Alternatively, a `GH_TOKEN` set on the host is passed through. Whatever token
-you give it, Claude can do with it what the token allows (comment, open PRs,
+you give it, the agent can do with it what the token allows (comment, open PRs,
 push via the API), so prefer a fine-grained token scoped to the repos you
 want. SSH remotes work through the forwarded ssh-agent (see below).
 
 ## SSH agent
 
-`claude-box` forwards the host's ssh-agent (`$SSH_AUTH_SOCK`, on GNOME the
-gcr agent) into the box, so `git` over SSH and `ssh` work with whatever keys
-the agent holds. The key files are never mounted; `~/.ssh/known_hosts` and
-`~/.ssh/config` are, read-only, so host keys and host aliases match the host. The box user (uid 1000, image name `node`) is renamed
-to your host user name at start, so `ssh host` logs in as you, as on the host;
-its home stays `/home/node`.
+All three boxes forward the host's ssh-agent (`$SSH_AUTH_SOCK`, on GNOME the
+gcr agent), so `git` over SSH and `ssh` work with whatever keys the agent
+holds. The key files are never mounted; `~/.ssh/known_hosts` and
+`~/.ssh/config` are, read-only, so host keys and host aliases match the host.
 
-This means Claude can push to, or log in to, anything your loaded keys can
+The box user (uid 1000, image name `node`) is also renamed to your host user
+name at start, so `ssh host` logs in as you, as on the host; its home stays
+`/home/node`.
+
+This means the agent can push to, or log in to, anything your loaded keys can
 reach. To narrow that, load only the keys you want into the agent, or start
-`claude-box` with `SSH_AUTH_SOCK=` to leave the agent out. Without an agent
+a box with `SSH_AUTH_SOCK=` to leave the agent out. Without an agent
 the box starts as before, with a warning.
 
 New hosts can't be added to the read-only `known_hosts`; connect once from
@@ -295,8 +307,8 @@ the host first.
 
 [mise](https://mise.jdx.dev) (mise-en-place) is in the image and its shims
 are on `PATH`, so tools it installs work in Claude's non-interactive shells
-without `mise activate`. `claude-box` persists its data separately from any
-host install of mise:
+without `mise activate`. The boxes persist its data, shared by all three and
+separate from any host install of mise:
 
 | host | container |
 |---|---|

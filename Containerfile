@@ -1,19 +1,19 @@
 # Fedora, matching the host, so `dnf` lookups (search/info/provides/repoquery)
 # answer for the host's release and repos. dnf runs unprivileged in the box,
-# so it can query but never install; claude-box mounts a copy of the host's
+# so it can query but never install; the wrappers mount a copy of the host's
 # repo config and a persistent metadata cache.
 FROM registry.fedoraproject.org/fedora:44
 
 # /usr/bin/node and /usr/bin/npm are provided by the nodejs24 *-bin
 # subpackages; naming the paths keeps the unversioned commands.
 #
-# GNOME extension tooling, used by claude-box: gdbus/gsettings/
+# GNOME extension tooling, used by all boxes: gdbus/gsettings/
 # glib-compile-schemas (glib2), the dconf backend so gsettings writes reach
 # the host, msgfmt for translations, and python3-gobject for the
 # gnome-extensions shim below. (The real gnome-extensions CLI lives in the
 # gnome-shell package, which pulls in mutter, gjs and much more.)
 #
-# docker/podman clients for `claude-box --docker`, which points them at a
+# docker/podman clients for `<tool>-box --docker`, which points them at a
 # sidecar engine. No docker-buildx (weak deps are off): without it `docker
 # build` uses the classic builder, which podman's API serves directly, instead
 # of starting a BuildKit container whose result never becomes an image.
@@ -58,7 +58,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 
 # mise (mise-en-place) for per-project tool versions. Installed system-wide
 # like opencode, so it is updated by rebuilding the image; the tools it
-# installs go to ~/.local/share/mise, which claude-box persists on the host.
+# installs go to ~/.local/share/mise, which the wrappers persist on the host.
 RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
  && mise --version
 
@@ -86,5 +86,5 @@ WORKDIR /work
 # come next, so tools installed with mise work in non-interactive shells
 # (Claude's Bash tool) without `mise activate`.
 ENV PATH=/home/node/.local/bin:/home/node/.local/share/mise/shims:$PATH
-# No ENTRYPOINT: each wrapper (claude-box, opencode-box, pi-box) selects the
-# binary and passes its own config mounts.
+# No ENTRYPOINT: each wrapper (claude-box, opencode-box, pi-box) runs
+# `abox-init <binary>` and passes its own config mounts.
