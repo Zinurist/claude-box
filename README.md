@@ -34,7 +34,9 @@ One shared image, one wrapper per tool:
   binary; not used on the host.
 - `opencode-box` — runs `opencode`, bind-mounts `~/.config/opencode` (config),
   `~/.local/share/opencode` (auth, db, sessions), `~/.local/state/opencode`
-  (last-used models, prompt history) and `~/.cache/opencode`
+  (last-used models, prompt history) and `~/.cache/opencode`. Defaults to
+  the `zinufgame-llama/qwen3.8-27b-128k` model (`OPENCODE_BOX_MODEL` to
+  change, empty for none) via `OPENCODE_CONFIG_CONTENT`
   (helper binaries opencode downloads at startup). If the host has opencode in
   `~/.opencode/bin`, that binary is mounted read-only over the image's copy, so
   the box always runs the version you installed on the host.
@@ -313,8 +315,6 @@ escape code, which VTE terminals (GNOME Terminal, ddterm) ignore, so "copied
 to clipboard" would copy nothing. The socket belongs to gnome-shell, so this
 needs `--security-opt label=disable` like the other host sockets.
 
-This lets the agent read your clipboard at any time (`wl-paste`), including
-passwords copied from a password manager, and open windows on your desktop.
 Start a box with `WAYLAND_DISPLAY=` to leave it out.
 
 ## mise

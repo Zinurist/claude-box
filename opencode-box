@@ -30,6 +30,17 @@ ABOX_EXTRA+=(
   -e OPENROUTER_API_KEY
   -e GROQ_API_KEY
 )
+# Default model, applied on top of ~/.config/opencode via opencode's
+# OPENCODE_CONFIG_CONTENT (a `model` there beats the last-used one; `-m` on
+# the command line still beats both). Set OPENCODE_BOX_MODEL= to use plain
+# config, or OPENCODE_CONFIG_CONTENT yourself to replace this.
+model=${OPENCODE_BOX_MODEL-zinufgame-llama/qwen3.8-27b-128k}
+if [ -z "${OPENCODE_CONFIG_CONTENT:-}" ] && [ -n "$model" ]; then
+  ABOX_EXTRA+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"$model\"}")
+else
+  ABOX_EXTRA+=(-e OPENCODE_CONFIG_CONTENT)
+fi
+
 cmd=opencode
 [ "$ABOX_SHELL" -eq 1 ] && cmd=bash
 abox_run "$cmd" "${ABOX_ARGS[@]}"
