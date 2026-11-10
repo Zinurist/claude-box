@@ -2,7 +2,7 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 
-# opencode-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
+# opencode-box [--docker] [--shell] [--no-ssh] [PATH...] [-- CLI_ARG...]
 # Everything common to the boxes is set up in agent-box-lib.sh.
 abox_setup "$@"
 mkdir -p ~/.config/opencode ~/.local/share/opencode ~/.local/state/opencode ~/.cache/opencode

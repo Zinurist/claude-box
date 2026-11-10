@@ -2,7 +2,7 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 
-# pi-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
+# pi-box [--docker] [--shell] [--no-ssh] [PATH...] [-- CLI_ARG...]
 # Everything common to the boxes is set up in agent-box-lib.sh.
 abox_setup "$@"
 mkdir -p ~/.pi

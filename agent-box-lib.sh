@@ -111,7 +111,7 @@ abox_dnf_setup() {
 # Forward the host's ssh-agent socket, so git over SSH and ssh work from the
 # box with whatever keys the agent holds. The key files themselves stay on the
 # host; known_hosts and config are mounted read-only so host keys and host
-# aliases match the host. Start with SSH_AUTH_SOCK= to leave the agent out.
+# aliases match the host. Skipped with --no-ssh.
 abox_ssh_setup() {
   if [ ! -S "${SSH_AUTH_SOCK:-}" ]; then
     echo "$ABOX_ME: no ssh-agent (SSH_AUTH_SOCK); SSH keys unavailable in the box" >&2
@@ -203,10 +203,12 @@ abox_parse() {
 #   --docker  a throwaway container engine for test containers
 #   --shell   same box, but start bash instead of the tool; CLI args after
 #             `--` go to bash (e.g. `opencode-box --shell -- -c 'make test'`)
+#   --no-ssh  don't forward the ssh-agent, known_hosts or ssh config
 
 ABOX_ME=${0##*/}
 ABOX_DOCKER=0
 ABOX_SHELL=0
+ABOX_SSH=1
 # Extra podman flags; wrappers append their own.
 ABOX_EXTRA=()
 # Container name; defaults to <wrapper>-<pid>. claude-box overrides it.
@@ -233,6 +235,7 @@ abox_setup() {
     case $1 in
       --docker) ABOX_DOCKER=1 ;;
       --shell) ABOX_SHELL=1 ;;
+      --no-ssh) ABOX_SSH=0 ;;
       *) break ;;
     esac
     shift
@@ -241,7 +244,7 @@ abox_setup() {
   trap abox_cleanup EXIT
 
   abox_dnf_setup
-  abox_ssh_setup
+  if [ "$ABOX_SSH" -eq 1 ]; then abox_ssh_setup; fi
   abox_user_setup
   abox_tools_setup
   abox_wayland_setup

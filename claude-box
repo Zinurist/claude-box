@@ -2,7 +2,7 @@
 set -euo pipefail
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/agent-box-lib.sh"
 
-# claude-box [--docker] [--shell] [PATH...] [-- CLI_ARG...]
+# claude-box [--docker] [--shell] [--no-ssh] [PATH...] [-- CLI_ARG...]
 # Everything common to the boxes (flags, mounts, ssh, GNOME, docker, gh,
 # mise, ...) is set up in agent-box-lib.sh; this adds Claude Code's own state
 # and peer sessions.

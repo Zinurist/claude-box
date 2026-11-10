@@ -244,8 +244,8 @@ claude-box --shell -- -c 'dnf provides /usr/bin/gnome-extensions'
 echo 'mise ls' | claude-box --shell
 ```
 
-The wrapper flags (`--shell`, `--docker`) come first, in any order, before
-any paths. All wrappers only allocate a TTY (`-t`) when stdin and stdout are
+The wrapper flags (`--shell`, `--docker`, `--no-ssh`) come first, in any
+order, before any paths. All wrappers only allocate a TTY (`-t`) when stdin and stdout are
 terminals, so they also work from scripts and agents.
 
 ## Docker (`--docker`)
@@ -302,8 +302,8 @@ name at start, so `ssh host` logs in as you, as on the host; its home stays
 
 This means the agent can push to, or log in to, anything your loaded keys can
 reach. To narrow that, load only the keys you want into the agent, or start
-a box with `SSH_AUTH_SOCK=` to leave the agent out. Without an agent
-the box starts as before, with a warning.
+a box with `--no-ssh` to leave out the agent, `known_hosts` and `config`
+entirely. Without an agent the box starts as before, with a warning.
 
 New hosts can't be added to the read-only `known_hosts`; connect once from
 the host first.
